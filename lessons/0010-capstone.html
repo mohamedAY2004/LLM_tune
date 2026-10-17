@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Capstone Extractor</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 10 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 10 &middot; about 30 minutes</p>
+<h1>Capstone: your own extractor, shipped</h1>
+<p class="lede">Everything from Lessons 4–9, with less scaffolding and a bar to clear.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll design the training data for a harder extractor, train it, and clear two acceptance bars on a fixed held-out test. Then you’ll publish it on the Hub with an honest model card. That’s the course’s finish line.</p>
+</div>
+
+<h2>The brief</h2>
+
+<h3>1 · The task: a harder schema</h3>
+
+<p>The default schema adds one field: <code>{"name", "age", "city", "email"}</code>, where <code>email</code> is <code>null</code> when the message has none. The prompt says so: <em>“Use null for anything missing.”</em></p>
+
+<p>The notebook holds a fixed <strong>acceptance test</strong> of 60 messages. You may read it, but you may not train on it. Its names, cities, email domains and phrasings never appear in your training data, and a check enforces that. It’s harder than Lesson 4’s test in exactly the ways Lesson 8 exposed:</p>
+<ul>
+  <li>5 of its 8 names and 4 of its 8 cities have two or more words (“Mei Lin”, “Rio de Janeiro”).</li>
+  <li>26 of the 60 messages have no email.</li>
+  <li>Some messages have other numbers in them: “Has 2 dogs and 3 cats”, “Moved to … in 2019”.</li>
+  <li>The phrasing is messier: lowercase chat, dashes, the email before the name.</li>
+</ul>
+
+<p><span class="sidenote">Want your own schema instead? Add a field such as <code>phone</code>, then write your own held-out generator by the same rules: unseen values and phrasings, with some rows missing the optional field. The bars stay the same.</span>
+Your job is the training data. In <code>TRAIN_TEMPLATES</code> you write the phrasings, and you choose the names, cities and domains. The notebook’s <code>fill()</code> turns them into prompt-completion rows, as in Lesson 4.</p>
+
+<h3>2 · The loop</h3>
+
+<div class="pipeline wide" role="img" aria-label="design data, train, score, read failures, tag them, fix the data, repeat">
+  <span class="step">design data<em>Lesson 4</em></span><span class="arrow">&rarr;</span>
+  <span class="step">train<em>Lesson 5 or 6</em></span><span class="arrow">&rarr;</span>
+  <span class="step">score<em>Lesson 8</em></span><span class="arrow">&rarr;</span>
+  <span class="step">read &amp; tag failures<em>Lesson 8</em></span><span class="arrow">&#8635;</span>
+  <span class="step">ship<em>Lesson 9</em></span>
+</div>
+
+<p>Start with the fast recipe: Lesson 5’s full SFT of the 135M model. When I ran the finished notebook on a laptop GPU (RTX 3050 Ti), one loop took under 4 minutes, and training took 51 seconds of that. Each time you miss a bar, the notebook prints the failing rows. Tag them as in Lesson 8, change the data, and run the loop again. Switch to LoRA on the 360M model (Lesson 6) only if better data stops helping.</p>
+
+<p>Here’s how it went for me. My first design reused Lesson 4’s phrasings, added an email to half of them, and kept one-word names and cities. It scored 1.00 valid JSON but only 0.85 field accuracy, which misses bar 2. It wrote “Rio” for “Rio de Janeiro” and “Ming” for “Mei Lin”. After I redesigned the data with the Lesson 8 tags in mind, the same recipe reached 1.00 / 0.95. LoRA on the 360M model (r=16) reached 1.00 / 1.00. I won’t show you that design. Building it is the capstone.</p>
+
+<h3>3 · The rubric</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Criterion</th><th>Bar</th><th>Checked by</th></tr></thead>
+  <tbody>
+    <tr><td>Valid-JSON rate on the acceptance test</td><td>≥ 0.95</td><td>notebook, section 4</td></tr>
+    <tr><td>Field accuracy on 4 fields, nulls included</td><td>≥ 0.90</td><td>notebook, section 4</td></tr>
+    <tr><td>No test names, cities, domains or phrasings in training</td><td>none</td><td>check 1</td></tr>
+    <tr><td>Model card: <code>base_model</code>, data, before/after table, limitations</td><td>all four</td><td>check 3, and you</td></tr>
+    <tr><td>On the Hub, and loads by repo id in three lines</td><td>works</td><td>check 4 + last cell</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Checklist.</strong> Before you call it done: the base model is scored first, on the same 60 rows. Every number in the card comes from a variable, never typed by hand. The limitations name failures you actually saw. Loading by repo id works in a fresh Colab session: copy the last cell, then paste in your repo id and the prompt.</p>
+
+<h2>Do it: the capstone notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0010-capstone.ipynb" download><code>0010-capstone.ipynb</code></a>, then in <a href="https://colab.research.google.com/">Colab</a> use <em>File → Upload notebook</em>. Choose a T4 GPU, and check that your <code>HF_TOKEN</code> secret is there (Lesson 9).</li>
+  <li>TODO 1: write at least 8 training phrasings, and extend the name, city and domain lists.</li>
+  <li>TODO 2: build the trainer from Lesson 5 or 6. Train, then read section 4’s verdict and failures.</li>
+  <li>Missed a bar? Fix the data in section 2 and rerun from there. Once both bars pass, do TODOs 3 and 4: write your card’s limitations, then push.</li>
+  <li>Run the last cell. Then open your model page on the Hub and check that the card, the numbers and the “Finetuned from” link are right.</li>
+</ol>
+
+<p>Stuck on the design? The <a href="../reference/eval-and-ship.html">evaluate &amp; ship sheet</a> lists the stress-test checklist and failure tags. The <a href="../reference/sft-cheatsheet.html">SFT</a> and <a href="../reference/lora-qlora.html">LoRA</a> sheets hold the training recipes.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. On a message with no email, your model replies <code>"email": "kwame@gmail.com"</code>. What is the most direct fix?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="That’s an `invented` failure. The model says null only if training showed it messages without an email that map to null.">Add training messages without any email</li>
+    <li data-why="More passes over data that never shows a missing email teach the same habit harder.">Train longer on the same rows</li>
+    <li data-why="The learning rate changes how fast it learns, not what the data teaches.">Use a tenfold higher learning rate</li>
+    <li data-why="A bigger model also learns “always fill the email” if every training row has one. Fix the data first.">Switch to the bigger 1.7B model</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. Review (Lesson 9): why reload the saved folder and score it again before pushing?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="You publish what you tested: the exact files on disk, merged and reloaded, give the same scores.">Proves the shipped files behave identically</li>
+    <li data-why="Reloading doesn’t change speed. Merging an adapter is what removes the extra inference work.">Reloading makes the model run faster</li>
+    <li data-why="The Hub stores files. It never asks for a score. The card’s numbers are your own evidence.">The Hub requires a local score</li>
+    <li data-why="`push_to_hub` works on any model object, reloaded or not.">push_to_hub only accepts freshly reloaded models</li>
+  </ol>
+</div>
+
+<div class="recall">
+  <p class="recall-q">3. From memory: an interviewer says, “Walk me through your capstone in under a minute.” Answer in four or five sentences.</p>
+  <div class="recall-a">
+    <p>I fine-tuned SmolLM2 to pull name, age, city and email (or null) out of short messages as JSON. The base model already understood the content but broke the format, so I measured valid-JSON rate and field accuracy with greedy decoding on a held-out test with unseen names, cities and phrasings. My first dataset missed the field-accuracy bar. Error analysis showed it truncated two-word cities and mangled unfamiliar names, so I added those patterns, plus messages without an email, until it cleared 0.95 and 0.90. I merged and re-scored the model, then published it on the Hub with a card covering base model, data, before/after numbers and limitations, and anyone can load it with <code>pipeline</code>.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/trl/dataset_formats">TRL: “Dataset formats and types”</a>. Your capstone is mostly data design, and this page defines the prompt-completion rows you’re building. Secondary: <a href="https://huggingface.co/docs/hub/model-cards">Hub docs: Model cards</a>, for what a good card contains.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck on a bar? Tag every failure in the printout with the Lesson 8 tags, then fix the data behind the most common tag first. For errors, see the <a href="../reference/troubleshooting.html">troubleshooting sheet</a>. When you ship, share your Hub link with someone who can try it.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0009-ship-it.html">&larr; Lesson 9</a>
+  <span><a href="../reference/eval-and-ship.html">Cheat sheet: evaluate &amp; ship</a> &middot; <a href="../reference/sft-cheatsheet.html">Cheat sheet: SFT</a> &middot; <a href="../reference/lora-qlora.html">Cheat sheet: LoRA &amp; QLoRA</a></span>
+  <a href="../index.html">Course home &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

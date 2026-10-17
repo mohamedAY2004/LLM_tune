@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Further Reading</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/widgets.js" defer></script>
+<style>
+  .res li { margin-bottom: .7rem; }
+  .res li small { display: block; font-size: .85rem; color: var(--ink-2); }
+</style>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; Lessons 1–10</span>
+</nav>
+
+<p class="kicker">Reference</p>
+<h1>Further reading</h1>
+<p class="lede">Trusted sources behind each lesson, and the communities to ask when you’re stuck. Versions used in this course: Transformers 5.19, TRL 1.15, PEFT 0.21, Datasets 5.1, PyTorch 2.14.</p>
+
+<div class="callout warn">
+  <p class="callout-title">Watch for stale tutorials</p>
+  <p>Many tutorials predate Transformers v5. If you see <code>load_in_4bit=True</code> in <code>from_pretrained</code>, <code>torch_dtype</code>, <code>tokenizer=</code> in a Trainer, <code>max_seq_length</code> in TRL, or TensorFlow model classes, translate them with the <a href="https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md">v5 migration guide</a>.</p>
+</div>
+
+<h2>PyTorch, coming from Keras</h2>
+<ul class="res">
+  <li><a href="https://docs.pytorch.org/tutorials/beginner/basics/intro.html">PyTorch: Learn the Basics</a><small>The official 8-page path: tensors, Dataset/DataLoader, <code>nn.Module</code>, autograd, the training loop, save/load. The PyTorch underneath every Hugging Face call.</small></li>
+  <li><a href="https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html">PyTorch: Optimizing Model Parameters</a><small>The explicit loop that <code>model.fit()</code> hides: forward → <code>loss.backward()</code> → <code>optimizer.step()</code> → <code>zero_grad()</code>. Lesson 2.</small></li>
+  <li><a href="https://keras.io/guides/writing_a_custom_training_loop_in_torch/">Keras 3: Writing a training loop from scratch in PyTorch</a> (fchollet)<small>The best Keras → PyTorch bridge. Note that torch losses take <code>(pred, target)</code>, the reverse of Keras.</small></li>
+  <li><a href="https://docs.pytorch.org/tutorials/beginner/nn_tutorial.html">What is torch.nn really?</a> (Jeremy Howard)<small>Builds a training loop from raw tensors up to <code>nn.Module</code>, <code>optim</code> and <code>DataLoader</code>. Read it when <code>Trainer</code> feels like magic.</small></li>
+  <li><a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html">PyTorch: <code>CrossEntropyLoss</code></a><small>The <code>ignore_index=-100</code> behind every loss mask. Lesson 3.</small></li>
+  <li><a href="https://huggingface.co/learn/llm-course/chapter7/6">HF LLM Course 7.6: Training a causal language model</a><small>Shows that the label shift happens <em>inside</em> the model, so you pass <code>labels=input_ids</code> unshifted. Lesson 2.</small></li>
+</ul>
+
+<h2>Hugging Face Transformers v5</h2>
+<ul class="res">
+  <li><a href="https://huggingface.co/docs/transformers/chat_templating">Chat templates</a><small><code>apply_chat_template</code>, <code>add_generation_prompt</code>, and templating data for training.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/llm_tutorial">Text generation</a><small><code>generate()</code>, decoding strategies and common pitfalls.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/models">Loading models</a> &middot; <a href="https://huggingface.co/docs/transformers/model_doc/auto">Auto classes</a><small><code>from_pretrained</code>, <code>dtype</code>, <code>device_map</code>.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/training">Fine-tuning with Trainer</a> &middot; <a href="https://huggingface.co/docs/transformers/main_classes/trainer">Trainer API</a><small>The canonical v5 causal-LM fine-tune. The page still says the default load dtype is fp32; in v5 it’s <code>"auto"</code>.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/main_classes/data_collator">Data collators</a><small>Dynamic padding, and <code>DataCollatorForLanguageModeling(mlm=False)</code> for causal LMs. Lessons 3–4.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/model_memory_anatomy">GPU memory anatomy</a><small>Why full fine-tuning costs about 18 bytes per parameter. Lessons 6–7.</small></li>
+  <li><a href="https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md">v5 migration guide</a><small>The authoritative v4 → v5 diff: <code>torch_dtype</code> → <code>dtype</code>, <code>tokenizer=</code> → <code>processing_class=</code>, <code>evaluation_strategy</code> → <code>eval_strategy</code>, <code>load_in_4bit</code> → <code>quantization_config</code>, TF/Flax removed.</small></li>
+</ul>
+
+<h2>Hugging Face LLM Course</h2>
+<ul class="res">
+  <li><a href="https://huggingface.co/learn/llm-course/chapter2/2">Ch 2: Behind the pipeline</a><small>Tokenizer → model → post-processing with Auto classes. Lesson 1.</small></li>
+  <li><a href="https://huggingface.co/learn/llm-course/chapter3/4">Ch 3.4: A full training loop</a><small>A manual PyTorch loop over HF models. Lesson 2. Its mixed-precision tip uses the deprecated <code>torch.cuda.amp</code>.</small></li>
+  <li><a href="https://huggingface.co/learn/llm-course/chapter11/2">Ch 11: Fine-tuning LLMs</a><small>Good for concepts (chat templates, SFT, LoRA). Section 11.3 uses <code>setup_chat_format</code>, which TRL 1.15 dropped, and 11.4 uses <code>max_seq_length</code>, which now errors (use <code>max_length</code>). Cross-check code against the TRL docs.</small></li>
+</ul>
+
+<h2>TRL, PEFT, Datasets</h2>
+<ul class="res">
+  <li><a href="https://huggingface.co/docs/trl/sft_trainer">TRL: SFT Trainer</a><small><code>SFTTrainer</code>/<code>SFTConfig</code>, dataset formats, completion-only loss. Given a model <em>string</em>, it loads in fp32 unless you set <code>model_init_kwargs={"dtype": ...}</code>. Lesson 5 onward.</small></li>
+  <li><a href="https://huggingface.co/docs/trl/dataset_formats">TRL: Dataset formats</a><small>Conversational (<code>messages</code>) vs prompt-completion. Lessons 4 and 10.</small></li>
+  <li><a href="https://huggingface.co/docs/trl/peft_integration">TRL: PEFT integration</a> &middot; <a href="https://huggingface.co/docs/trl/reducing_memory_usage">Reducing memory usage</a><small>LoRA/QLoRA through <code>SFTTrainer</code>, plus the out-of-memory playbook. Lessons 6–7.</small></li>
+  <li><a href="https://github.com/huggingface/trl/blob/main/examples/sft_qlora/sft_qlora.ipynb">TRL notebook: SFT with QLoRA on free Colab</a><small>An official end-to-end QLoRA recipe on a T4. Lesson 7.</small></li>
+  <li><a href="https://huggingface.co/docs/peft/quicktour">PEFT quicktour</a> &middot; <a href="https://huggingface.co/docs/peft/developer_guides/lora">LoRA guide</a><small><code>LoraConfig</code> → <code>get_peft_model</code> → <code>print_trainable_parameters</code>, <code>target_modules="all-linear"</code>, <code>merge_and_unload()</code>. The quicktour’s last import is wrong: <code>AutoPeftModelForCausalLM</code> comes from <code>peft</code>.</small></li>
+  <li><a href="https://huggingface.co/docs/datasets/process">Datasets: Process</a><small><code>map(batched=True)</code>, <code>remove_columns</code>, <code>train_test_split</code>. Lesson 4.</small></li>
+</ul>
+
+<h2>Evaluating &amp; shipping</h2>
+<ul class="res">
+  <li><a href="https://huggingface.co/spaces/OpenEvals/evaluation-guidebook">Evaluation guidebook: Designing your automatic evaluation</a> (Hugging Face OpenEvals)<small>How to build an eval set you can trust and inspect its failures. Lessons 8 and 10.</small></li>
+  <li><a href="https://huggingface.co/docs/transformers/model_sharing">Sharing models</a> &middot; <a href="https://huggingface.co/docs/hub/security-tokens">User access tokens</a><small><code>push_to_hub</code>, plus Read vs Write token roles. Lesson 9.</small></li>
+  <li><a href="https://huggingface.co/docs/hub/model-cards">Model cards (Hub)</a> &middot; <a href="https://huggingface.co/docs/huggingface_hub/guides/model-cards"><code>ModelCard</code> API</a><small>What a card contains (including <code>base_model</code> metadata) and how to write and push one from Python. Lessons 9–10.</small></li>
+  <li><a href="https://huggingface.co/docs/peft/package_reference/lora">PEFT LoRA reference</a><small><code>merge_and_unload()</code> and the other adapter methods.</small></li>
+</ul>
+
+<h2>Primary explainers</h2>
+<ul class="res">
+  <li><a href="https://arxiv.org/abs/2106.09685">LoRA paper</a> (Hu et al., 2021)<small>What <code>r</code>, <code>lora_alpha</code> and target modules mean (§4). Read after your first LoRA run.</small></li>
+  <li><a href="https://arxiv.org/abs/2305.14314">QLoRA paper</a> (Dettmers et al., 2023)<small>NF4, double quantization, paged optimizers: why 4-bit training fits on small GPUs.</small></li>
+  <li><a href="https://thinkingmachines.ai/blog/lora/">LoRA Without Regret</a> (Thinking Machines, 2025)<small>Modern LoRA hyperparameters: all-linear targets, learning rate about 10× full fine-tuning.</small></li>
+  <li><a href="https://huggingface.co/blog/chat-templates">HF blog: Chat templates, the silent performance killer</a><small>Why a wrong prompt format quietly degrades a model. Concepts only; take the code from the docs.</small></li>
+  <li><a href="https://github.com/rasbt/LLMs-from-scratch">Raschka: LLMs from Scratch</a> (ch. 7 instruction fine-tuning, appendix E LoRA)<small>SFT and LoRA written by hand in plain PyTorch. Interview-depth understanding of what <code>SFTTrainer</code> does.</small></li>
+  <li><a href="https://karpathy.ai/zero-to-hero.html">Karpathy: Neural Networks: Zero to Hero</a><small>Deep intuition for causal LMs and tokenizers, including why labels are the inputs shifted by one. Optional long-form viewing.</small></li>
+</ul>
+
+<h2>Models, data, compute</h2>
+<ul class="res">
+  <li>Models (Apache-2.0, not gated): <a href="https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct">SmolLM2-135M-Instruct</a> (full fine-tuning), SmolLM2-360M-Instruct and Qwen2.5-0.5B-Instruct (LoRA), SmolLM2-1.7B-Instruct (QLoRA).<small>Avoid Qwen3/SmolLM3 for short-answer SFT demos: their “thinking” mode is on by default.</small></li>
+  <li>Warm-up data: <code>HuggingFaceTB/smoltalk</code>, config <code>everyday-conversations</code><small>A <code>messages</code> column, 2,260 rows: a tiny SFT practice set.</small></li>
+  <li>Capstone stretch data: <a href="https://huggingface.co/datasets/gretelai/gretel-pii-masking-en-v1"><code>gretelai/gretel-pii-masking-en-v1</code></a><small>Apache-2.0, not gated, 50k/5k/5k synthetic documents with labelled personal-information spans. A real-data version of the extractor, once the synthetic one passes.</small></li>
+  <li><a href="https://research.google.com/colaboratory/faq.html">Colab FAQ</a><small>Free sessions last 12 hours at most. The GPU type isn’t published (a T4 in practice).</small></li>
+  <li><a href="https://www.kaggle.com/docs/notebooks">Kaggle Notebooks</a><small>1× P100 or 2× T4, about 30 GPU-hours a week. Pick the T4 for QLoRA.</small></li>
+</ul>
+<p class="muted" style="font-size:.85rem">The timings quoted in the lessons were measured on a 4 GB laptop GPU (RTX 3050 Ti). A Colab or Kaggle T4 will differ, usually for the better.</p>
+
+<h2>Communities</h2>
+<ul class="res">
+  <li><a href="https://discuss.huggingface.co/">Hugging Face Forums</a>, especially <a href="https://discuss.huggingface.co/c/beginners/5">Beginners</a> and <a href="https://discuss.huggingface.co/c/transformers/9">Transformers</a><small>The official place for Transformers/TRL/PEFT usage questions; Hugging Face staff answer there.</small></li>
+  <li><a href="https://hf.co/join/discord">Hugging Face Discord</a><small>Real-time help, and a view of what others fine-tune.</small></li>
+  <li><a href="https://discuss.pytorch.org/">PyTorch Forums</a><small>Pure PyTorch questions (autograd, CUDA out-of-memory): errors below the Hugging Face layer.</small></li>
+  <li><a href="https://github.com/huggingface/trl/discussions">TRL GitHub Discussions</a><small>Maintainers discuss SFT recipes. Bring confirmed bugs with a minimal repro.</small></li>
+  <li><a href="https://www.reddit.com/r/LocalLLaMA/">r/LocalLLaMA</a><small>Practitioners trading VRAM and quantization tips on consumer GPUs. Not authoritative on API correctness. A good place to share your capstone.</small></li>
+</ul>
+
+<nav class="course-nav">
+  <a href="../index.html">&larr; Course home</a>
+  <a href="troubleshooting.html">Troubleshooting &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

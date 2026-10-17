@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QLoRA on Free GPUs</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 7 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 7 &middot; about 25 minutes</p>
+<h1>QLoRA: a 1.7B model on a free GPU</h1>
+<p class="lede">Store the frozen model in 4 bits, train LoRA on top, and fit a 1.7B fine-tune on a free GPU.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll fine-tune <code>SmolLM2-1.7B-Instruct</code>, almost 5× Lesson 6’s model, on a free Colab T4. Before loading anything, you’ll predict its memory with arithmetic. Then you’ll measure it and see why it fits.</p>
+</div>
+
+<h2>Why it fits</h2>
+
+<h3>1 · Memory math: count the bytes</h3>
+
+<p><span class="sidenote">Hugging Face’s <a href="https://huggingface.co/docs/transformers/model_memory_anatomy">GPU memory anatomy</a> guide: mixed-precision weights take 6 bytes per parameter (a 16-bit working copy plus a 32-bit master copy), AdamW’s two states take 8, and gradients take 4.</span>
+Training memory is mostly <em>bytes per parameter × number of parameters</em>. A full fine-tune in mixed precision with AdamW keeps weights, gradients and two optimizer states for every parameter. That adds up to about <strong>18 bytes per parameter</strong>, before activations.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>What’s stored</th><th>Bytes per parameter</th><th>SmolLM2-1.7B</th></tr></thead>
+  <tbody>
+    <tr><td>Weights in fp32</td><td>4</td><td>6.8 GB</td></tr>
+    <tr><td>Weights in fp16 or bf16</td><td>2</td><td>3.4 GB</td></tr>
+    <tr><td>Weights in 4-bit</td><td>about 0.5</td><td>about 0.85 GB</td></tr>
+    <tr><td>Full fine-tune, mixed precision + AdamW</td><td>about 18</td><td>about 31 GB</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A T4 has 16 GB, so a full fine-tune of this model can’t fit. <strong>QLoRA</strong> (quantized LoRA) cuts the bill twice. First, the frozen weights are <strong>quantized</strong>: stored as 4-bit numbers plus one scale per block of 64 weights, about 0.85 GB in total. Second, as in Lesson 6, the 18-byte cost applies only to the LoRA adapters, about 1% of the parameters.</p>
+
+<p><span class="sidenote"><strong>Activations</strong> are values the forward pass saves for the backward pass. They grow with batch size × sequence length, and section 3’s knobs target them.</span>
+When I loaded SmolLM2-1.7B in 4-bit, <code>get_memory_footprint()</code> reported 1.01 GB. That’s a little above the estimate, because the embedding table stays in 16-bit.</p>
+
+<h3>2 · Load in 4-bit with <code>BitsAndBytesConfig</code></h3>
+
+<pre><code class="language-python">from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,                      # store linear-layer weights in 4 bits
+    bnb_4bit_quant_type="nf4",              # NormalFloat4, the QLoRA data type
+    bnb_4bit_use_double_quant=True,         # also compress the scaling constants
+    bnb_4bit_compute_dtype=torch.float16,   # the T4 has no bf16
+)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id, dtype=torch.float16,          # embeddings + norms (not quantized)
+    quantization_config=bnb_config)</code></pre>
+
+<p><span class="sidenote">The <a href="https://arxiv.org/abs/2305.14314">QLoRA paper</a> introduced NF4 and double quantization, and fine-tuned a 65B model on one 48 GB GPU. Knob-by-knob details: <a href="https://huggingface.co/docs/transformers/quantization/bitsandbytes">Transformers bitsandbytes guide</a>.</span>
+<strong>NF4</strong> (4-bit NormalFloat) is a 4-bit format built for roughly normally distributed weights, as trained weights are. <strong>Double quantization</strong> also quantizes the per-block scales, saving about 0.4 bits per parameter. The <strong>compute dtype</strong> is what weights are unpacked into for each matrix multiply: <code>float16</code> on a T4.</p>
+
+<p>The 4-bit weights stay frozen. Gradients flow <em>through</em> them into the LoRA adapters, so your Lesson 6 code barely changes: a <code>LoraConfig</code> (rank 16 today) passed as <code>peft_config=</code>. Three practical details:</p>
+<ul>
+<li>On a T4, set <code>bf16=False, fp16=True</code> in <code>SFTConfig</code>: fp16 mixed-precision training.</li>
+<li>For 4-bit models, TRL 1.15 casts the adapters to bf16, and fp16 training then crashes (<code>NotImplementedError: ... 'BFloat16'</code>). The notebook upcasts them to fp32, a three-line fix.</li>
+<li>Old blog posts call <code>from_pretrained(..., load_in_4bit=True)</code>. In v5 that raises a <code>TypeError</code>.</li>
+</ul>
+
+<h3>3 · Knobs when memory is tight</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Knob</th><th>What it trades</th></tr></thead>
+  <tbody>
+    <tr><td><code>per_device_train_batch_size</code> 1–4 + <code>gradient_accumulation_steps</code></td><td>Fewer activations at once. Gradients from several small batches are combined into one optimizer step, so the effective batch (batch × steps) stays the same. Slower.</td></tr>
+    <tr><td><code>gradient_checkpointing=True</code></td><td>Keeps only some activations and recomputes the rest in the backward pass. On by default in <code>SFTConfig</code>. Slower.</td></tr>
+    <tr><td><code>max_length</code></td><td>Caps tokens per example, so caps activations. Too short cuts off the completion.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><span class="sidenote">Keras 3 has the same accumulation idea: <code>keras.optimizers.Adam(gradient_accumulation_steps=4)</code> (<a href="https://keras.io/api/optimizers/adam/">Keras Adam docs</a>). More knobs: TRL’s <a href="https://huggingface.co/docs/trl/reducing_memory_usage">Reducing memory usage</a> and the <a href="https://huggingface.co/docs/transformers/grad_checkpointing">gradient checkpointing guide</a>.</span>
+Measure, don’t guess: <code>model.get_memory_footprint()</code> after loading, and <code>torch.cuda.max_memory_allocated()</code> after training. Call <code>torch.cuda.reset_peak_memory_stats()</code> just before training so the peak covers the training run alone.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0007-qlora-on-a-free-gpu.ipynb" download><code>0007-qlora-on-a-free-gpu.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>. This one needs the GPU.</li>
+  <li>Fill in the four <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Run to the end. Compare the peak GPU memory with your TODO 1 estimate.</li>
+</ol>
+
+<p>I tested the notebook on a 4 GB laptop GPU, on the T4’s fp16 path. LoRA trained 18.1M parameters (1.05%) in 41 seconds, and training peaked at 1.46 GB, about 5% of the full fine-tune estimate. One surprise: the base model already gave valid JSON on all 20 held-out rows, pretty-printed. After training it still scored 1.0, in the compact style of the training data. Always score the base model first.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. Using the 18-bytes-per-parameter rule, roughly how much memory does a full fine-tune of a 1B-parameter model need with AdamW, before activations?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="1e9 parameters × 18 bytes = 18e9 bytes, about 18 GB. Too much for a 16 GB T4 even before activations.">About 18 GB</li>
+    <li data-why="That’s 4 bytes per parameter, the fp32 weights alone. Training also needs gradients and AdamW state.">About 4 GB</li>
+    <li data-why="That’s 2 bytes per parameter, the fp16 weights alone, enough for inference but not for training.">About 2 GB</li>
+    <li data-why="That’s the 4-bit weights alone, the frozen part of QLoRA.">About 0.5 GB</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. Why does the T4 notebook set <code>bnb_4bit_compute_dtype=torch.float16</code> rather than <code>torch.bfloat16</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="bf16 needs an Ampere-or-newer GPU for native support. The T4 is older, so compute in float16.">The T4 has no native bfloat16</li>
+    <li data-why="Both are 16-bit formats: 2 bytes per value.">float16 uses less memory than bfloat16</li>
+    <li data-why="The compute dtype is for unpacked weights and activations, not the 4-bit storage. TRL’s own docs use bfloat16 on GPUs that support it.">NF4 only works with float16 compute</li>
+    <li data-why="LoRA adapters train fine with either compute dtype. The choice is about what the GPU supports.">bfloat16 cannot train the LoRA adapters</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. Training crashes with CUDA out-of-memory at <code>per_device_train_batch_size=8</code>. Which change cuts memory but keeps the same effective batch size?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="2 × 4 = 8 examples per optimizer step, but only 2 examples’ activations in memory at once.">Batch size 2, accumulation steps 4</li>
+    <li data-why="Turning checkpointing off stores more activations, so memory goes up.">Batch size 8, checkpointing turned off</li>
+    <li data-why="The effective batch drops to 2, and a longer max_length raises memory per example.">Batch size 2, double the max_length</li>
+    <li data-why="The effective batch drops to 4, and the learning rate doesn’t change memory.">Batch size 4, double learning rate</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 6): LoRA with <code>r=8</code> on one 960 × 960 linear layer. How many trainable numbers does it add?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="A is 8 × 960 and B is 960 × 8: 7,680 + 7,680 = 15,360, about 1.7% of the layer’s 921,600.">15,360</li>
+    <li data-why="That’s W itself, 960 × 960, which stays frozen.">921,600</li>
+    <li data-why="That’s only one of the two matrices. LoRA trains both A and B.">7,680</li>
+    <li data-why="That’s 960 × 2. The rank multiplies both matrix sides: r × (960 + 960).">1,920</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. On a T4: <code>args</code> (with <code>bf16=False, fp16=True</code>), <code>peft_config</code>, <code>train</code> and <code>tok</code> are ready. Put the lines in order to QLoRA-fine-tune. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16)</li>
+    <li>model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float16, quantization_config=bnb_config)</li>
+    <li>trainer = SFTTrainer(model=model, args=args, train_dataset=train, processing_class=tok, peft_config=peft_config)</li>
+    <li>for p in [q for q in trainer.model.parameters() if q.requires_grad]: p.data = p.data.float()</li>
+    <li>trainer.train()</li>
+    <li data-distractor>model = AutoModelForCausalLM.from_pretrained(model_id, load_in_4bit=True)</li>
+    <li data-distractor>bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)</li>
+  </ol>
+  <div class="parsons-explain"><p>The upcast line must sit between building the trainer and training: TRL casts the adapters to bf16 when it builds the trainer, and fp16 training crashes on bf16 gradients. Transformers v5 removed the <code>load_in_4bit=True</code> argument of <code>from_pretrained</code>. Quantization settings now go in a <code>BitsAndBytesConfig</code> passed as <code>quantization_config=</code>. The bfloat16 config is the right shape for newer GPUs, but the T4 has no native bf16, so compute in float16. It also leaves out NF4, which is the 4-bit type you want for training.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: in an interview you’re asked, “How would you fine-tune a 7B model on one 16 GB GPU?” Walk through the memory in two or three sentences.</p>
+  <div class="recall-a">
+    <p>A full fine-tune needs about 18 bytes per parameter with AdamW, so roughly 126 GB for 7B, which is impossible. Even plain LoRA keeps 16-bit weights, about 14 GB, which leaves almost nothing for activations. With QLoRA the frozen weights are stored in 4-bit NF4 (about 3.5 GB), only the small LoRA adapters get gradients and optimizer state, and I’d control activations with a batch of 1–2 plus gradient accumulation, gradient checkpointing and a sensible <code>max_length</code>, checking <code>torch.cuda.max_memory_allocated()</code> after a short run.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/transformers/quantization/bitsandbytes">Transformers docs: bitsandbytes</a>. Read the QLoRA section: compute dtype, NF4 and nested quantization. For the memory math, read the short <a href="https://huggingface.co/docs/transformers/model_memory_anatomy">GPU memory usage</a> page.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0006-lora.html">&larr; Lesson 6</a>
+  <span><a href="../reference/lora-qlora.html">Cheat sheet: LoRA &amp; QLoRA</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0008-evaluating-an-extractor.html">Next: Lesson 8 — evaluating an extractor &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

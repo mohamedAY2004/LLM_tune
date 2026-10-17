@@ -1,0 +1,385 @@
+/* ==========================================================================
+   LLM fine-tuning course — shared stylesheet
+   Every lesson and reference page links this file. Tufte-inspired: a narrow
+   reading column, margin notes on wide screens, quiet colour, prints cleanly.
+   ========================================================================== */
+
+:root {
+  --bg: #fbfaf6;
+  --ink: #1d1d1b;
+  --ink-2: #4a4944;
+  --ink-3: #7a7870;
+  --rule: #dedbd1;
+  --code-bg: #f1efe7;
+  --accent: #a4372b;      /* Hugging Face / PyTorch side, links */
+  --accent-2: #2f5d7c;    /* Keras side, secondary */
+  --good: #2b7a4b;
+  --good-bg: #e6f2ea;
+  --bad: #b3261e;
+  --bad-bg: #f8e5e3;
+  --mark: #fff1bf;
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", "URW Palladio L", Georgia, serif;
+  --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
+
+  --col: 40rem;           /* reading column */
+  --margin: 18rem;        /* sidenote column */
+  --gap: 2.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161614; --ink: #ecebe6; --ink-2: #c2c0b8; --ink-3: #8f8d85;
+    --rule: #34332f; --code-bg: #1f1f1c; --accent: #e58a74; --accent-2: #86b6d8;
+    --good: #72c899; --good-bg: #1b2d22; --bad: #f08f84; --bad-bg: #3a2220; --mark: #4a3f17;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161614; --ink: #ecebe6; --ink-2: #c2c0b8; --ink-3: #8f8d85;
+  --rule: #34332f; --code-bg: #1f1f1c; --accent: #e58a74; --accent-2: #86b6d8;
+  --good: #72c899; --good-bg: #1b2d22; --bad: #f08f84; --bad-bg: #3a2220; --mark: #4a3f17;
+}
+
+/* ---------- Base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html { font-size: 17px; -webkit-text-size-adjust: 100%; }
+@media (min-width: 900px) { html { font-size: 18px; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--serif);
+  line-height: 1.6;
+  font-kerning: normal;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+}
+main {
+  width: min(100% - 32px, var(--col));
+  margin: 0 auto;
+  padding: 3rem 0 5rem;
+}
+@media (min-width: 1180px) {
+  main { margin-left: calc((100% - (var(--col) + var(--gap) + var(--margin))) / 2); }
+}
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+strong { font-weight: 600; }
+mark { background: var(--mark); color: inherit; padding: 0 .15em; }
+.muted { color: var(--ink-3); }
+.h-note { font: 400 .72rem var(--sans); font-style: normal; letter-spacing: .04em; color: var(--ink-3); margin-left: .4rem; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+
+/* ---------- Headings ---------- */
+.kicker {
+  font-family: var(--sans);
+  font-size: .72rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .5rem;
+}
+h1 {
+  font-weight: 400;
+  font-size: 2.3rem;
+  line-height: 1.15;
+  margin: 0 0 .6rem;
+  letter-spacing: -.01em;
+}
+.lede {
+  font-size: 1.2rem;
+  font-style: italic;
+  color: var(--ink-2);
+  margin: 0 0 2rem;
+}
+h2 {
+  font-weight: 400;
+  font-style: italic;
+  font-size: 1.55rem;
+  line-height: 1.25;
+  margin: 3rem 0 .8rem;
+}
+h3 {
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin: 2rem 0 .5rem;
+}
+p, ul, ol { margin: 0 0 1.1rem; }
+li { margin-bottom: .35rem; }
+li > ul, li > ol { margin-top: .35rem; }
+
+/* ---------- Sidenotes (margin notes) ---------- */
+.sidenote {
+  display: block;
+  font-size: .82rem;
+  line-height: 1.45;
+  color: var(--ink-2);
+  border-left: 2px solid var(--rule);
+  padding: .1rem 0 .1rem .8rem;
+  margin: .4rem 0 1.2rem;
+}
+@media (min-width: 1180px) {
+  .sidenote {
+    float: right;
+    clear: right;
+    width: var(--margin);
+    margin: .25rem calc(-1 * (var(--margin) + var(--gap))) 1rem 0;
+    border-left: 0;
+    padding: 0;
+  }
+}
+
+/* ---------- Code ---------- */
+code, kbd, pre { font-family: var(--mono); font-size: .84em; }
+:not(pre) > code {
+  background: var(--code-bg);
+  padding: .08em .3em;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+pre {
+  position: relative;
+  background: var(--code-bg);
+  border-left: 3px solid var(--rule);
+  padding: .9rem 1rem;
+  margin: 0 0 1.3rem;
+  overflow-x: auto;
+  line-height: 1.5;
+  border-radius: 0 4px 4px 0;
+  tab-size: 4;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+.copy-btn {
+  position: absolute; top: .4rem; right: .4rem;
+  font: 500 .68rem var(--sans);
+  letter-spacing: .04em;
+  color: var(--ink-3);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: .15rem .45rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s;
+}
+pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+@media (hover: none) { .copy-btn { opacity: 1; } }
+
+/* Quiet syntax colouring for highlight.js output */
+.hljs-keyword, .hljs-built_in, .hljs-literal { color: var(--accent); }
+.hljs-string { color: var(--good); }
+.hljs-comment { color: var(--ink-3); font-style: italic; }
+.hljs-number { color: var(--accent-2); }
+.hljs-title, .hljs-title.function_ { color: var(--ink); font-weight: 600; }
+.hljs-meta { color: var(--ink-3); }
+
+/* ---------- Wide elements reach into the margin on big screens ---------- */
+@media (min-width: 1180px) {
+  .wide { width: calc(var(--col) + var(--gap) + var(--margin)); }
+}
+
+/* ---------- Keras ↔ PyTorch side-by-side ---------- */
+.compare {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: .8rem;
+  margin: 0 0 1.5rem;
+}
+@media (min-width: 760px) { .compare { grid-template-columns: 1fr 1fr; } }
+.compare > div { min-width: 0; }
+.compare pre { margin: 0; height: calc(100% - 1.6rem); }
+.compare .label {
+  font: 600 .7rem var(--sans);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  margin: 0 0 .35rem;
+}
+.compare .label.keras { color: var(--accent-2); }
+.compare .label.torch { color: var(--accent); }
+.compare .keras-side pre { border-left-color: var(--accent-2); }
+.compare .torch-side pre { border-left-color: var(--accent); }
+
+/* ---------- Tables ---------- */
+table { border-collapse: collapse; width: 100%; margin: 0 0 1.5rem; font-size: .92rem; }
+th, td { text-align: left; vertical-align: top; padding: .45rem .7rem .45rem 0; border-bottom: 1px solid var(--rule); }
+th { font: 600 .72rem var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.table-wrap { overflow-x: auto; }
+
+/* ---------- Callouts ---------- */
+.callout {
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 1rem 0;
+  margin: 2rem 0;
+}
+.callout > :last-child { margin-bottom: 0; }
+.callout .callout-title {
+  font: 600 .72rem var(--sans);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .5rem;
+}
+.callout.win .callout-title { color: var(--good); }
+.callout.source .callout-title { color: var(--accent); }
+.callout.ask { font-style: italic; color: var(--ink-2); }
+.callout.warn .callout-title { color: var(--bad); }
+
+/* ---------- Figures / diagrams ---------- */
+figure { margin: 1.5rem 0 2rem; }
+figure svg { display: block; width: 100%; height: auto; color: var(--ink); }
+figcaption { font-size: .82rem; color: var(--ink-2); margin-top: .5rem; }
+.pipeline {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+  font-family: var(--mono); font-size: .8rem;
+  margin: 1rem 0 1.5rem;
+}
+.pipeline .step { border: 1px solid var(--rule); border-radius: 4px; padding: .35rem .6rem; background: var(--code-bg); }
+.pipeline .arrow { color: var(--ink-3); font-family: var(--sans); }
+.pipeline .step em { font-style: normal; color: var(--ink-3); display: block; font-family: var(--sans); font-size: .68rem; }
+
+/* ---------- Steps (numbered task lists) ---------- */
+ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+ol.steps > li { counter-increment: step; position: relative; padding-left: 2.2rem; margin-bottom: .9rem; }
+ol.steps > li::before {
+  content: counter(step);
+  position: absolute; left: 0; top: .05rem;
+  width: 1.5rem; height: 1.5rem; border-radius: 50%;
+  border: 1px solid var(--ink-3); color: var(--ink-2);
+  font: 600 .75rem/1.4rem var(--sans); text-align: center;
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  font: 600 .78rem var(--sans);
+  letter-spacing: .03em;
+  color: var(--bg);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  padding: .45rem .9rem;
+  cursor: pointer;
+}
+.btn:disabled { opacity: .45; cursor: default; }
+.btn-quiet { color: var(--ink-2); background: transparent; border-color: var(--rule); }
+.btn-row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+
+/* ---------- Quiz (multiple choice) ---------- */
+.quiz, .parsons, .recall {
+  margin: 1.6rem 0 2rem;
+  padding: 1.1rem 1.2rem 1.2rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+.quiz-q, .parsons-q, .recall-q { margin: 0 0 .8rem; font-weight: 600; }
+.quiz-options { list-style: none; padding: 0; margin: 0; display: grid; gap: .45rem; }
+.quiz-options li { margin: 0; }
+.quiz-option {
+  width: 100%;
+  text-align: left;
+  font: inherit; font-size: .95rem;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: .55rem .8rem;
+  cursor: pointer;
+}
+.quiz-option:hover:not(:disabled) { border-color: var(--ink-3); }
+.quiz-option:disabled { cursor: default; }
+.quiz-option.is-correct { border-color: var(--good); background: var(--good-bg); }
+.quiz-option.is-wrong { border-color: var(--bad); background: var(--bad-bg); opacity: .8; }
+.quiz-feedback, .parsons-feedback { font-size: .92rem; margin-top: .8rem; }
+.quiz-feedback:empty, .parsons-feedback:empty { display: none; }
+.quiz-feedback.good, .parsons-feedback.good { color: var(--good); }
+.quiz-feedback.bad, .parsons-feedback.bad { color: var(--bad); }
+.quiz-feedback code, .parsons-feedback code { color: var(--ink); }
+
+/* ---------- Parsons problem (put code lines in order) ---------- */
+.parsons-board { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+@media (min-width: 760px) { .parsons-board { grid-template-columns: 1fr 1fr; } }
+.parsons-col h4 {
+  font: 600 .7rem var(--sans); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 .4rem;
+}
+.parsons-pool, .parsons-answer {
+  list-style: none; margin: 0; padding: .4rem;
+  min-height: 3rem;
+  border: 1px dashed var(--rule); border-radius: 4px;
+  display: grid; gap: .35rem; align-content: start;
+}
+.parsons-answer { counter-reset: pline; }
+.parsons-answer li { counter-increment: pline; }
+.parsons-pool li, .parsons-answer li { margin: 0; }
+.parsons-line {
+  width: 100%; text-align: left;
+  font: inherit; color: var(--ink);
+  background: var(--code-bg);
+  border: 1px solid var(--rule); border-radius: 3px;
+  padding: .35rem .55rem;
+  cursor: pointer;
+  display: flex; gap: .5rem; align-items: baseline;
+}
+.parsons-answer .parsons-line::before {
+  content: counter(pline);
+  font: 600 .68rem var(--sans); color: var(--ink-3); min-width: 1rem;
+}
+.parsons-line code { white-space: pre; background: none; padding: 0; }
+.parsons-line.is-correct { border-color: var(--good); background: var(--good-bg); }
+.parsons-line.is-wrong { border-color: var(--bad); background: var(--bad-bg); }
+
+/* ---------- Free recall (type first, then reveal) ---------- */
+.recall textarea {
+  width: 100%; min-height: 4.5rem;
+  font: .9rem var(--mono);
+  color: var(--ink); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: 4px;
+  padding: .55rem .7rem; resize: vertical;
+}
+.recall-a {
+  margin-top: 1rem; padding-top: .9rem;
+  border-top: 1px solid var(--rule);
+}
+.recall-a > :last-child { margin-bottom: 0; }
+.recall-grade { font: .8rem var(--sans); color: var(--ink-3); margin-top: .8rem; }
+.recall-grade .btn { margin-left: .3rem; }
+
+/* ---------- Scoreboard + navigation ---------- */
+.scoreboard {
+  font: .8rem var(--sans); color: var(--ink-3);
+  text-align: right; margin: -1rem 0 2rem;
+}
+.course-nav {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: .6rem 1.5rem;
+  font: .8rem var(--sans);
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem; margin-top: 3.5rem;
+}
+.course-nav.top { border-top: 0; border-bottom: 1px solid var(--rule); padding: 0 0 .8rem; margin: 0 0 2.5rem; }
+.course-nav a { text-decoration: none; }
+.course-nav a:hover { text-decoration: underline; }
+.course-nav .muted { color: var(--ink-3); }
+
+/* ---------- Reference sheets: denser layout ---------- */
+body.reference main { width: min(100% - 32px, 58rem); margin: 0 auto; }
+body.reference h2 { font-size: 1.25rem; margin-top: 2.2rem; border-bottom: 1px solid var(--rule); padding-bottom: .3rem; }
+body.reference pre { font-size: .8rem; }
+.ref-grid { display: grid; grid-template-columns: 1fr; gap: 0 2rem; }
+@media (min-width: 860px) { .ref-grid { grid-template-columns: 1fr 1fr; } }
+.ref-grid > section { min-width: 0; break-inside: avoid; }
+
+/* ---------- Print ---------- */
+@media print {
+  :root { --bg: #fff; --ink: #000; --code-bg: #f4f4f4; }
+  html { font-size: 11pt; }
+  main, body.reference main { width: 100%; margin: 0; padding: 0; }
+  .course-nav, .copy-btn, .btn-row, .recall textarea, .recall-grade, .scoreboard, .no-print { display: none !important; }
+  .recall-a { display: block !important; }
+  .sidenote { float: none; width: auto; margin: .3rem 0 .8rem; border-left: 2px solid #ccc; padding-left: .6rem; }
+  .wide { width: 100%; }
+  pre { white-space: pre-wrap; break-inside: avoid; border-left-color: #bbb; }
+  h2, h3 { break-after: avoid; }
+  .quiz, .parsons, .recall, .callout, figure { break-inside: avoid; }
+  a { color: inherit; }
+}

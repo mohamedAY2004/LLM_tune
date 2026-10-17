@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Labels and Masking</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 3 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 3 &middot; about 25 minutes</p>
+<h1>Labels &amp; masking</h1>
+<p class="lede">Tell the loss which tokens count, so the model learns the answer and not the question.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll build labels that hide the prompt behind <code>-100</code>, so the loss counts only the 23 answer tokens of an 84-token example. Then you’ll train on eight examples and see the proof: the loss on the answer collapses, while the loss on the prompt stays put.</p>
+</div>
+
+<h2>Choosing what the model learns</h2>
+
+<h3>1 · Lesson 2 trained on the question too</h3>
+
+<p>In Lesson 2 the labels were the whole input, so the loss counted every token: the system prompt, the user’s message and the answer. Take the first training row from our task. The model predicts 83 of its 84 tokens (position 0 has nothing before it), and only 23 of those are the answer: the <strong>completion tokens</strong>. The rest are <strong>prompt tokens</strong>.</p>
+
+<p>Predicting the prompt is wasted effort. At inference time the user supplies the prompt, so nobody needs the model to write it. It also blurs the number you watch. Before training, the loss over all tokens was 3.06, but over the answer alone it was 0.16. The big number was mostly prompt.</p>
+
+<p>Worse, it changes what gets learned. When I trained eight rows with unmasked labels, the loss on the prompt fell from 4.17 to 0.26: the model had learned to predict the instruction and the system prompt. With the prompt masked, an otherwise identical run left it at 4.10.</p>
+
+<h3>2 · <code>-100</code> means “skip this position”</h3>
+
+<p><span class="sidenote">“Specifies a target value that is ignored and does not contribute to the input gradient.” The default is <code>ignore_index=-100</code>. <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html">PyTorch CrossEntropyLoss</a>.</span>
+PyTorch’s cross-entropy has an <code>ignore_index</code>, and its default is <code>-100</code>. A target of <code>-100</code> adds nothing to the loss or the gradients, and the mean is taken over the remaining tokens. Hugging Face models pass your labels to that loss, so a label of <code>-100</code> means “don’t learn this token”. Setting the prompt’s labels to <code>-100</code> is called a <strong>loss mask</strong>. The recipe:</p>
+
+<pre><code class="language-python">full = tok.apply_chat_template(prompt + completion,
+          return_tensors="pt", return_dict=True)
+prompt_len = tok.apply_chat_template(prompt, add_generation_prompt=True,
+          return_tensors="pt", return_dict=True)["input_ids"].shape[1]
+
+labels = full["input_ids"].clone()    # a copy, not the same tensor
+labels[:, :prompt_len] = -100         # hide the prompt
+loss = model(**full, labels=labels).loss</code></pre>
+
+<p>Why does the prompt’s length mark the boundary? Rendered with <code>add_generation_prompt=True</code>, the prompt is exactly the start of the full conversation, ending with <code>&lt;|im_start|&gt;assistant</code> and a newline. Everything after it is the answer, including the closing <code>&lt;|im_end|&gt;</code>, which teaches the model to stop.</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Positions</th><th>Tokens</th><th><code>labels</code></th></tr></thead>
+  <tbody>
+    <tr><td>0 – 60</td><td>system prompt, user message, <code>&lt;|im_start|&gt;assistant</code> ⏎</td><td><code>-100</code></td></tr>
+    <tr><td>61 – 83</td><td><code>{"name": "Kenji", "age": 66, "city": "Oslo"}</code> <code>&lt;|im_end|&gt;</code> ⏎</td><td>same as <code>input_ids</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><span class="sidenote">Collators pad labels with <code>-100</code>, which “will be automatically ignored by PyTorch loss functions”. <a href="https://huggingface.co/docs/transformers/main_classes/data_collator">Data collators</a>.</span>
+Two details. First, <strong>clone</strong>. <code>labels = input_ids</code> is a second name for the same tensor, so writing <code>-100</code> into it corrupts the inputs too. When I tried that (on CPU), the forward pass crashed with <code>IndexError: index out of range in self</code>. Second, <strong>padding</strong>. When rows of different lengths are batched, the pad positions get <code>-100</code> too. Data collators do that for you.</p>
+
+<h3>3 · What comes next</h3>
+
+<p><span class="sidenote">“By default, the trainer computes the loss on the completion tokens only, ignoring the prompt tokens.” <a href="https://huggingface.co/docs/trl/sft_trainer">TRL SFT Trainer docs</a>, “Train on completion only”.</span>
+TRL, Hugging Face’s library for fine-tuning chat models, has an <code>SFTTrainer</code> that builds exactly these labels for prompt-completion data. When I ran it on our first training row, its processed labels matched the hand-built ones token for token. Lesson 5 hands the job to it.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0003-labels-and-masking.ipynb" download><code>0003-labels-and-masking.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>.</li>
+  <li>Fill in the three <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Run the training cell and compare the prompt loss and the answer loss, before and after. Then run the final <code>score</code> cell.</li>
+</ol>
+
+<p>When I ran the solved notebook on a laptop GPU (RTX 3050 Ti, fp32), the 24 masked training steps took about 4 seconds. On the first row, the answer loss fell from 0.161 to 0.001, while the prompt loss went from 4.169 to 4.103. On 10 held-out rows, the valid-JSON rate was 1.0 and field accuracy 0.9: one city came back as <code>" Perth"</code>, with a stray space. Eight examples is a tiny run.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. A position’s label is <code>-100</code>. What happens there during training?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="-100 is cross-entropy’s default `ignore_index`: the position is skipped in the loss and the mean.">It adds nothing to the loss or gradients</li>
+    <li data-why="Labels don’t change what the model predicts. They only decide what the loss compares against.">The model predicts a padding token there instead</li>
+    <li data-why="It’s a sentinel value, not a weight. The position is simply skipped.">Its loss is multiplied by negative one hundred</li>
+    <li data-why="The token stays in `input_ids`, so the model still reads it as context. It just isn’t a target.">The tokenizer drops that token before the forward</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. How do you find the position where the completion starts?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The prompt rendered with the assistant opener is exactly the start of the full sequence, so its token length is the boundary.">Token count of the prompt plus assistant opener</li>
+    <li data-why="That tells you how long the answer is, not where it starts. The template also adds tokens around it.">Length of the completion rendered on its own</li>
+    <li data-why="The system and user turns end with `&lt;|im_end|&gt;` too, so the first one comes long before the answer.">Position of the first &lt;|im_end|&gt; in the sequence</li>
+    <li data-why="Prompt and answer lengths vary from row to row. You have to measure the prompt.">Half the length of the full tokenized conversation</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. You write <code>labels = input_ids</code>, then <code>labels[:, :n] = -100</code>. What happens?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Both names point at one tensor, so the inputs now hold -100, which isn’t a valid token id. Use `.clone()`.">input_ids gets -100 too, so the forward crashes</li>
+    <li data-why="Plain assignment doesn’t copy a tensor. It creates a second name for the same data.">It works, since labels and inputs are separate</li>
+    <li data-why="`[:, :n]` selects the first n positions, which is the prompt. The problem is the missing copy.">The answer gets masked instead of the prompt</li>
+    <li data-why="PyTorch never copies on assignment. You have to call `.clone()` yourself.">PyTorch copies the tensor automatically before the write</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 2): after <code>loss.backward()</code>, where are the gradients stored?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Each parameter tensor gets a `.grad`. `optimizer.step()` reads them there, and `zero_grad()` clears them.">In each parameter’s .grad attribute</li>
+    <li data-why="`grad_fn` records how the loss was computed. The gradients land on the parameters.">Inside the loss tensor’s grad_fn</li>
+    <li data-why="The optimizer keeps its own running averages, but it reads the gradients from each parameter’s `.grad`.">In the optimizer’s internal state</li>
+    <li data-why="The config holds settings such as hidden size. Gradients live on the parameter tensors.">Inside the model’s config object</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>row</code> and <code>prompt_len</code> are ready. Order the lines to train one step on the answer tokens only. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>full = tok.apply_chat_template(row["prompt"] + row["completion"], return_tensors="pt", return_dict=True)</li>
+    <li>labels = full["input_ids"].clone()</li>
+    <li>labels[:, :prompt_len] = -100</li>
+    <li>loss = model(**full, labels=labels).loss</li>
+    <li>loss.backward()</li>
+    <li data-distractor>labels = full["input_ids"]</li>
+    <li data-distractor>labels[:, prompt_len:] = -100</li>
+  </ol>
+  <div class="parsons-explain"><p>Without <code>.clone()</code>, <code>labels</code> and <code>full["input_ids"]</code> are the same tensor, so masking would write <code>-100</code> into the inputs and crash the forward pass. <code>labels[:, prompt_len:] = -100</code> masks the <em>answer</em>, which leaves the model learning only the prompt: the opposite of what you want.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory, as if in an interview: “What is a loss mask in SFT, and how would you build one for a chat example?”</p>
+  <div class="recall-a">
+    <p>A loss mask decides which tokens count in the loss. In SFT you usually train on the completion only, because the prompt is always given at inference and learning to predict it wastes updates. To build it, render the full conversation with the chat template and get <code>input_ids</code>. Render the prompt alone with <code>add_generation_prompt=True</code>: its length is where the answer starts. Clone <code>input_ids</code> into <code>labels</code> and set the prompt positions (and any padding) to <code>-100</code>, cross-entropy’s default <code>ignore_index</code>. The model shifts the labels internally, so the loss covers only the answer tokens, including the end-of-turn token. TRL’s <code>SFTTrainer</code> does this by default for prompt-completion data.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/trl/sft_trainer">TRL, “SFT Trainer”</a>. Read “Label shifting and masking” and “Train on completion only”. They describe the labels you built today, and they’re the bridge to Lesson 5. For the <code>-100</code> mechanics, see <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html"><code>CrossEntropyLoss</code></a> (<code>ignore_index</code>).</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0002-one-training-step.html">&larr; Lesson 2</a>
+  <span><a href="../reference/training-loop.html">Cheat sheet: training loop &amp; labels</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0004-a-dataset-for-chat.html">Next: Lesson 4 — a dataset for chat &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

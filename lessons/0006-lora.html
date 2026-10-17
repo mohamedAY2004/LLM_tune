@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fine-Tuning with LoRA</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 6 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 6 &middot; about 25 minutes</p>
+<h1>LoRA: train 1% of a bigger model</h1>
+<p class="lede">Freeze the model, train a few small matrices inside it, and match a full fine-tune.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll fine-tune <code>SmolLM2-360M-Instruct</code>, almost 3× the size of Lesson 5’s model, while training about 1% of its parameters. It should match your Lesson 5 full fine-tune on the held-out test set, and the file you save is only about 17 MB.</p>
+</div>
+
+<h2>Freeze the model, train a little beside it</h2>
+
+<h3>1 · The LoRA idea</h3>
+
+<p>You know this move from Keras transfer learning: set <code>base.trainable = False</code> and train a small head on top. <strong>LoRA</strong> (Low-Rank Adaptation) also freezes the pretrained model. But the trainable part isn’t a head on top. It’s a small side path <em>inside</em> the model’s linear layers (PyTorch’s name for a Keras <code>Dense</code> layer). These side paths are called an <strong>adapter</strong>.</p>
+
+<figure>
+<svg viewBox="0 0 640 170" role="img" aria-label="Input x goes through the frozen weight W and, in parallel, through small matrices A then B; the two results are added to give the output h.">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="14" fill="currentColor">
+    <text x="20" y="74">x</text>
+    <path d="M34 70 H90 M90 70 V40 H180 M90 70 V125 H180" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M180 40 H190" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M180 125 H190" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <rect x="192" y="18" width="250" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+    <text x="317" y="45" text-anchor="middle">W·x — frozen, 960 × 960</text>
+    <rect x="192" y="104" width="100" height="44" rx="4" fill="none" style="stroke: var(--accent)" stroke-width="2"/>
+    <text x="242" y="131" text-anchor="middle">A (8 × 960)</text>
+    <path d="M292 126 H330" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <rect x="332" y="104" width="110" height="44" rx="4" fill="none" style="stroke: var(--accent)" stroke-width="2"/>
+    <text x="387" y="131" text-anchor="middle">B (960 × 8)</text>
+    <path d="M442 40 H520 V60 M442 126 H520 V96" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M520 60 V62" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <path d="M520 96 V94" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <circle cx="520" cy="78" r="15" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="520" y="83" text-anchor="middle">+</text>
+    <path d="M535 78 H590" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="598" y="83">h</text>
+    <text x="317" y="166" text-anchor="middle" style="fill: var(--accent)">trainable</text>
+  </g>
+</svg>
+<figcaption>One linear layer with a LoRA adapter (rank 8). The dashed box never changes. Only A and B learn. Shapes are PyTorch’s (out × in) order.</figcaption>
+</figure>
+
+<p><span class="sidenote">The LoRA paper froze GPT-3’s weights and trained only these “rank decomposition matrices”, cutting trainable parameters by 10,000× with no extra latency at inference. Its §4.1 defines A, B, the zero start and the <code>alpha / r</code> scaling. <a href="https://arxiv.org/abs/2106.09685">Hu et al. 2021</a>.</span>
+For a frozen weight matrix W, LoRA learns two thin matrices, A and B, and adds their product to the layer’s output:</p>
+
+<pre data-nocopy><code class="language-plaintext">h = W·x + (alpha / r) · B·(A·x)        # W frozen; only A and B train</code></pre>
+
+<p>The <strong>rank</strong> <code>r</code> is small: 8 today. Take one 960 × 960 attention projection in SmolLM2-360M. W holds 921,600 numbers. A (8 × 960) and B (960 × 8) together hold 15,360, about 1.7%. B starts at zero, so before the first training step the model behaves exactly like the base model.</p>
+
+<div class="compare wide">
+  <div class="keras-side">
+    <p class="label keras">Keras — freeze, add a head</p>
+<pre><code class="language-python">base = keras.applications.ResNet50(
+    weights="imagenet", include_top=False)
+base.trainable = False          # freeze
+
+model = keras.Sequential([
+    base,
+    keras.layers.GlobalAveragePooling2D(),
+    keras.layers.Dense(10),     # trains
+])</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">PEFT + TRL — freeze, add adapters inside</p>
+<pre><code class="language-python">from peft import LoraConfig
+
+peft_config = LoraConfig(
+    r=8, lora_alpha=16,
+    target_modules="all-linear",
+    task_type="CAUSAL_LM")
+
+trainer = SFTTrainer(model=model, args=args,
+    train_dataset=train, processing_class=tok,
+    peft_config=peft_config)  # freezes + adds A, B</code></pre>
+  </div>
+</div>
+
+<h3>2 · <code>LoraConfig</code>: four arguments and a bigger learning rate</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Argument</th><th>What it does</th><th>Today</th></tr></thead>
+  <tbody>
+    <tr><td><code>r</code></td><td>Rank of A and B. The adapter’s size grows in proportion to it.</td><td><code>8</code></td></tr>
+    <tr><td><code>lora_alpha</code></td><td>Scales the update by <code>alpha / r</code>. A common choice is 2 × r.</td><td><code>16</code></td></tr>
+    <tr><td><code>target_modules</code></td><td>Which layers get adapters. <code>"all-linear"</code> means every linear layer except the output head.</td><td><code>"all-linear"</code></td></tr>
+    <tr><td><code>task_type</code></td><td>Tells PEFT what kind of model it is wrapping.</td><td><code>"CAUSAL_LM"</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><span class="sidenote"><a href="https://thinkingmachines.ai/blog/lora/">“LoRA Without Regret”</a> (Thinking Machines, 2025) found LoRA on all layers far better than attention-only, and the best LoRA learning rate consistently about 10× the full fine-tuning one. The <a href="https://huggingface.co/docs/peft/developer_guides/lora">PEFT LoRA guide</a> defines <code>"all-linear"</code>.</span>
+Pass the config to <code>SFTTrainer</code> with <code>peft_config=</code>. The trainer freezes the model, inserts the adapters and trains only them. Apart from the checkpoint id and <code>peft_config=</code>, the one other change to your Lesson 5 code is the <strong>learning rate</strong>. The <a href="https://huggingface.co/docs/trl/peft_integration">TRL PEFT docs</a> recommend about 10× the full fine-tuning rate for LoRA: <code>2e-4</code>, next to TRL’s full fine-tuning default of <code>2e-5</code>. (Lesson 5 used <code>5e-5</code>.)</p>
+
+<h3>3 · What you save is an adapter</h3>
+
+<p><span class="sidenote">LoRA also saves training memory. Gradients and AdamW’s extra state exist only for <em>trainable</em> parameters, so the frozen 99% costs no optimizer memory. Lesson 7 turns that into numbers.</span>
+After training, <code>trainer.model.save_pretrained(folder)</code> writes <code>adapter_config.json</code> (your <code>LoraConfig</code>) and <code>adapter_model.safetensors</code> (just the A and B matrices), plus a <code>README.md</code> stub. That’s your whole fine-tune: about 17 MB, against about 1.4 GB for the full model in fp32. To use it, you load the base model and attach the adapter. Lesson 9 merges the two into one model for the Hub.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0006-lora.ipynb" download><code>0006-lora.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>.</li>
+  <li>Fill in the four <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Compare the AFTER score with your Lesson 5 result, and note the adapter size.</li>
+</ol>
+
+<p>When I tested the notebook on a 4 GB laptop GPU, LoRA trained 4.3M of 362M parameters (1.20%). Training took 40 seconds and peaked at 1.69 GB, less than Lesson 5’s full fine-tune of a model a third the size. Valid-JSON rate went from 0.55 to 1.0, with field accuracy 1.0, matching Lesson 5. The adapter file was 17.4 MB.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. After <code>SFTTrainer</code> wraps your model with LoRA, which weights does the optimizer update?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The base weights are frozen (`requires_grad=False`). Only the adapter matrices A and B get gradients and optimizer updates.">Only the small A and B matrices</li>
+    <li data-why="Nothing in the base model changes. LoRA freezes it completely and trains the adapters instead.">All the weights, but with smaller steps</li>
+    <li data-why="That’s the Keras transfer-learning pattern. `all-linear` skips the output head and puts adapters inside the layers.">Only the final output head on top</li>
+    <li data-why="With `target_modules=&quot;all-linear&quot;` both the attention and the feed-forward layers get adapters, and their own weights stay frozen.">Only the attention layers, not feed-forward ones</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. Your LoRA run used <code>learning_rate=2e-5</code>, and the loss barely moved in one epoch. What should you try first?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="TRL recommends about 10× the full fine-tuning rate for LoRA, so `2e-4` for SFT.">Raise the learning rate about tenfold</li>
+    <li data-why="Rank sets the adapter’s capacity, not its step size. Rank 8 learns this task fine at the right learning rate.">Increase the adapter rank to 256</li>
+    <li data-why="The output head isn’t the bottleneck. A too-small learning rate is the classic LoRA mistake.">Add the output head to target_modules</li>
+    <li data-why="Precision doesn’t fix a learning rate that’s too small, and the T4 has no native bf16 anyway.">Load the base model in bfloat16</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. What is inside <code>adapter_model.safetensors</code> after <code>save_pretrained</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="That’s why it’s a few MB. You still need the base model to use it.">Only the trained LoRA matrices, nothing else</li>
+    <li data-why="Merging the adapter into the base model is a separate step (Lesson 9). The adapter file holds only A and B.">The full fine-tuned model, merged and ready</li>
+    <li data-why="Tokenizer files are saved separately, by the tokenizer’s own `save_pretrained`.">The tokenizer and the chat template files</li>
+    <li data-why="Optimizer state goes into Trainer checkpoints, not into the adapter.">Optimizer state for resuming the training run</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 5): which number shows that fine-tuning worked on inputs the model never saw?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Only the held-out rows use unseen names, cities and phrasings. In Lesson 5, `score` on them went from 0.025 to 1.0.">Its score on the held-out test rows</li>
+    <li data-why="The training loss shows fit on rows the model trained on. It can’t tell you about new inputs.">Its final training loss in the log</li>
+    <li data-why="`mean_token_accuracy` is measured on training batches, so it shows fit, not generalisation.">Its token accuracy on the training rows</li>
+    <li data-why="Those rows share names and phrasings with training, so a model that memorised them could still score high (Lesson 4).">Its score on rows sliced from training</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>model</code>, <code>args</code> (with the LoRA learning rate), <code>train</code> and <code>tok</code> are ready. Put the lines in order to LoRA-fine-tune, save the <em>trained</em> adapter, then measure its file. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>peft_config = LoraConfig(r=8, lora_alpha=16, target_modules="all-linear", task_type="CAUSAL_LM")</li>
+    <li>trainer = SFTTrainer(model=model, args=args, train_dataset=train, processing_class=tok, peft_config=peft_config)</li>
+    <li>trainer.train()</li>
+    <li>trainer.model.save_pretrained("smollm2-360m-json-lora")</li>
+    <li>size_mb = os.path.getsize("smollm2-360m-json-lora/adapter_model.safetensors") / 1e6</li>
+    <li data-distractor>model.trainable = False</li>
+    <li data-distractor>model = get_peft_model(model, peft_config)</li>
+  </ol>
+  <div class="parsons-explain"><p><code>model.trainable = False</code> is Keras thinking. PyTorch modules have no <code>trainable</code> switch, so this just sets an unused attribute. PEFT freezes the model for you by setting <code>requires_grad=False</code> on every base parameter. <code>get_peft_model</code> is what <code>SFTTrainer</code> calls for you when you pass <code>peft_config</code>. Doing both raises a <code>ValueError</code>, because the model is already a <code>PeftModel</code>.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: in an interview you’re asked, “What is LoRA, and why does it need less memory than full fine-tuning?” Answer in two or three sentences.</p>
+  <div class="recall-a">
+    <p>LoRA freezes the pretrained weights and adds a trainable low-rank update beside each targeted linear layer, so the layer computes <code>W·x + (alpha/r)·B·A·x</code> with small matrices A and B. Only A and B (about 1% of the parameters) get gradients and AdamW state, and that’s where most training memory goes, so memory drops and the saved adapter is a few MB. B starts at zero, so training starts exactly from the base model.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/trl/peft_integration">TRL docs: PEFT integration</a>. It covers <code>peft_config</code> in <code>SFTTrainer</code>, the 10× learning-rate rule and adapter saving, the exact tools you used today. For the idea itself, read the <a href="https://arxiv.org/abs/2106.09685">LoRA paper</a>: the abstract and §4 are enough.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0005-first-sft-run.html">&larr; Lesson 5</a>
+  <span><a href="../reference/lora-qlora.html">Cheat sheet: LoRA &amp; QLoRA</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0007-qlora-on-a-free-gpu.html">Next: Lesson 7 — QLoRA on a free GPU &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

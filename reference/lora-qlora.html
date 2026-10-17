@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoRA and QLoRA</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; PEFT 0.21 &middot; TRL 1.15 &middot; verified on Transformers 5.19</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>LoRA &amp; QLoRA</h1>
+<p class="lede">Train a small adapter instead of the whole model, and store the frozen model in 4 bits when it still doesn’t fit. Taught in <a href="../lessons/0006-lora.html">Lesson 6</a> and <a href="../lessons/0007-qlora-on-a-free-gpu.html">Lesson 7</a>.</p>
+
+<div class="ref-grid">
+<section>
+<h2>The idea in one line</h2>
+<pre data-nocopy><code class="language-plaintext">h = W·x + (alpha / r) · B·(A·x)
+
+W  d_out × d_in   frozen
+A  r × d_in       trainable
+B  d_out × r      trainable, starts at 0</code></pre>
+<ul>
+<li>Adapter size per layer: <code>r × (d_in + d_out)</code>. For 960 × 960 at r = 8: 15,360 vs 921,600.</li>
+<li>B starts at zero, so at step 0 the model equals the base model.</li>
+<li>Keras analogy: <code>base.trainable = False</code> plus a small trainable part, but the part sits <em>inside</em> each linear layer.</li>
+</ul>
+</section>
+
+<section>
+<h2><code>LoraConfig</code></h2>
+<pre><code class="language-python">from peft import LoraConfig
+
+peft_config = LoraConfig(
+    r=8,                          # rank
+    lora_alpha=16,                # update scaled by alpha / r
+    target_modules="all-linear",  # every linear layer but the output head
+    task_type="CAUSAL_LM",
+)</code></pre>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Argument</th><th>PEFT default</th><th>Course choice</th></tr></thead>
+<tbody>
+<tr><td><code>r</code></td><td><code>8</code></td><td>8–16; try 32 if underfitting</td></tr>
+<tr><td><code>lora_alpha</code></td><td><code>8</code></td><td>2 × r</td></tr>
+<tr><td><code>lora_dropout</code></td><td><code>0.0</code></td><td>keep 0.0–0.05</td></tr>
+<tr><td><code>target_modules</code></td><td><code>None</code> (for Llama-style models: <code>q_proj</code>, <code>v_proj</code>)</td><td><code>"all-linear"</code></td></tr>
+<tr><td><code>task_type</code></td><td><code>None</code></td><td><code>"CAUSAL_LM"</code></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>LoRA in <code>SFTTrainer</code></h2>
+<pre><code class="language-python">args = SFTConfig(output_dir="lora-out",
+                 learning_rate=2e-4,   # ~10x full FT (2e-5)
+                 bf16=False,           # T4: no bf16
+                 max_length=256, report_to="none")
+trainer = SFTTrainer(model=model, args=args,
+                     train_dataset=train, processing_class=tok,
+                     peft_config=peft_config)
+trainer.model.print_trainable_parameters()
+trainer.train()</code></pre>
+<p><code>SFTTrainer</code> calls <code>get_peft_model</code> for you. Don’t do both: passing a <code>PeftModel</code> <em>and</em> <code>peft_config</code> raises <code>ValueError</code>.</p>
+</section>
+
+<section>
+<h2>Save, load, merge</h2>
+<pre><code class="language-python">trainer.model.save_pretrained("my-lora")
+# -> adapter_config.json, adapter_model.safetensors (+ README.md)
+
+from peft import PeftModel
+base = AutoModelForCausalLM.from_pretrained(base_id)
+model = PeftModel.from_pretrained(base, "my-lora")
+merged = model.merge_and_unload()   # plain model (Lesson 9)</code></pre>
+<p>Observed: SmolLM2-360M, r = 8, all-linear: 4.34M trainable params (1.20%), adapter file 17.4 MB. The full model in fp32 is about 1.4 GB.</p>
+</section>
+
+<section>
+<h2>Memory math</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Stored per parameter</th><th>Bytes</th><th>1.7B model</th></tr></thead>
+<tbody>
+<tr><td>fp32 weights</td><td>4</td><td>6.8 GB</td></tr>
+<tr><td>fp16 / bf16 weights</td><td>2</td><td>3.4 GB</td></tr>
+<tr><td>4-bit weights</td><td>~0.5</td><td>~0.85 GB</td></tr>
+<tr><td>Full FT: weights 6 + grads 4 + AdamW 8</td><td>~18</td><td>~31 GB</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>GB ≈ params × bytes / 1e9</code>, plus activations (batch × sequence length × layers × hidden size). LoRA pays the 18 bytes only for adapter parameters. QLoRA also stores the frozen weights in 4-bit.</p>
+</section>
+
+<section>
+<h2>QLoRA on a T4</h2>
+<pre><code class="language-python">%pip install -q -U "bitsandbytes>=0.46.1"
+from transformers import BitsAndBytesConfig
+
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_compute_dtype=torch.float16)   # bf16 on Ampere+
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_id, dtype=torch.float16,           # embeddings + norms
+    quantization_config=bnb_config)          # lands on the GPU
+
+args = SFTConfig(..., bf16=False, fp16=True)  # T4
+trainer = SFTTrainer(model=model, args=args, ...,
+                     peft_config=peft_config)
+
+# TRL 1.15 casts 4-bit models' adapters to bf16;
+# fp16 training needs them in fp32:
+for p in trainer.model.parameters():
+    if p.requires_grad:
+        p.data = p.data.float()</code></pre>
+<p>Skip the upcast and fp16 training fails with <code>NotImplementedError: "_amp_foreach_non_finite_check_and_unscale_cuda" not implemented for 'BFloat16'</code>.</p>
+<p>v5 removed <code>from_pretrained(..., load_in_4bit=True)</code>. It now fails with <code>TypeError: ... unexpected keyword argument 'load_in_4bit'</code>.</p>
+</section>
+
+<section>
+<h2>Out of memory? Turn these knobs</h2>
+<ol>
+<li><code>per_device_train_batch_size</code> down (1–4), <code>gradient_accumulation_steps</code> up, so batch × steps stays the same.</li>
+<li><code>gradient_checkpointing=True</code>. It’s the <code>SFTConfig</code> default, so check you haven’t turned it off.</li>
+<li><code>max_length</code> down to fit your longest real example.</li>
+<li>Smaller <code>r</code>, or LoRA on fewer modules.</li>
+<li>4-bit base model (QLoRA), or a smaller model.</li>
+</ol>
+</section>
+
+<section>
+<h2>Measure, don’t guess</h2>
+<pre><code class="language-python">model.get_memory_footprint() / 1e9        # model size, GB
+torch.cuda.reset_peak_memory_stats()
+trainer.train()
+torch.cuda.max_memory_allocated() / 1e9   # training peak, GB
+
+trainer.model.print_trainable_parameters()  # trainable / total</code></pre>
+<p>Counting by hand with <code>p.numel()</code> works for trainable parameters, but a 4-bit model’s packed weights report half their real count, so a hand-made total is wrong. Use <code>print_trainable_parameters()</code> for the percentage.</p>
+<p>Observed with the Lesson 7 notebook (4 GB laptop GPU, fp16): SmolLM2-1.7B in 4-bit has a 1.01 GB footprint. QLoRA with r = 16 on all linear layers, batch 4 × 2, <code>max_length=128</code> trained 18.1M params (1.05%) and peaked at 1.46 GB.</p>
+</section>
+</div>
+
+<p class="sidenote">Sources: <a href="https://huggingface.co/docs/peft/developer_guides/lora">PEFT LoRA guide</a> &middot; <a href="https://huggingface.co/docs/trl/peft_integration">TRL PEFT integration</a> &middot; <a href="https://thinkingmachines.ai/blog/lora/">LoRA Without Regret</a> &middot; <a href="https://huggingface.co/docs/transformers/model_memory_anatomy">GPU memory anatomy</a> &middot; <a href="https://huggingface.co/docs/transformers/quantization/bitsandbytes">Transformers bitsandbytes</a> &middot; <a href="https://huggingface.co/docs/trl/reducing_memory_usage">TRL reducing memory</a> &middot; <a href="https://arxiv.org/abs/2106.09685">LoRA paper</a> &middot; <a href="https://arxiv.org/abs/2305.14314">QLoRA paper</a></p>
+
+</main>
+</body>
+</html>

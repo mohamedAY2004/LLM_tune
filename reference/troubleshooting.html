@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting Fine-Tuning</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/widgets.js" defer></script>
+<style>
+  .fix td:first-child { width: 34%; }
+  .fix td:nth-child(2) { width: 28%; }
+  .fix td:last-child { white-space: nowrap; }
+  .fix td code { white-space: normal; word-break: break-word; }
+</style>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; Lessons 1–10</span>
+</nav>
+
+<p class="kicker">Reference</p>
+<h1>Troubleshooting</h1>
+<p class="lede">Symptom → cause → fix. Every entry here was hit while building and testing this course (transformers 5.19, TRL 1.15, PEFT 0.21).</p>
+
+<h2>Versions &amp; setup</h2>
+<div class="table-wrap">
+<table class="fix">
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th><th>Lesson</th></tr></thead>
+<tbody>
+<tr><td><code>unexpected keyword argument 'max_seq_length'</code></td><td>Renamed in TRL 1.x</td><td><code>SFTConfig(max_length=...)</code></td><td><a href="../lessons/0005-first-sft-run.html">5</a></td></tr>
+<tr><td><code>unexpected keyword argument 'tokenizer'</code></td><td>Renamed in Transformers v5 / TRL 1.x</td><td><code>processing_class=tok</code></td><td><a href="../lessons/0005-first-sft-run.html">5</a></td></tr>
+<tr><td><code>unexpected keyword argument 'load_in_4bit'</code></td><td>The kwarg was removed in v5</td><td><code>quantization_config=BitsAndBytesConfig(load_in_4bit=True, ...)</code></td><td><a href="../lessons/0007-qlora-on-a-free-gpu.html">7</a></td></tr>
+<tr><td><code>torch_dtype</code> deprecation warning</td><td>Renamed in v5</td><td><code>from_pretrained(..., dtype=...)</code></td><td><a href="../lessons/0001-tokens-in-tokens-out.html">1</a></td></tr>
+<tr><td>Native Windows only: <code>'NoneType' object has no attribute 'apply'</code> inside <code>_fused_forward</code></td><td>TRL 1.15’s <code>SFTTrainer</code> needs Triton, which ships with PyTorch on Linux only</td><td>Train on Colab/Kaggle, or <code>pip install triton-windows</code></td><td>&mdash;</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>The training loop &amp; labels</h2>
+<div class="table-wrap">
+<table class="fix">
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th><th>Lesson</th></tr></thead>
+<tbody>
+<tr><td><code>out.loss</code> is <code>None</code></td><td>No <code>labels</code> were passed</td><td><code>model(**batch, labels=labels)</code></td><td><a href="../lessons/0002-one-training-step.html">2</a></td></tr>
+<tr><td><code>Expected input batch_size (34) to match target batch_size (33)</code></td><td>You shifted the labels by hand</td><td>Pass labels unshifted. The model shifts them internally.</td><td><a href="../lessons/0002-one-training-step.html">2</a></td></tr>
+<tr><td><code>element 0 of tensors does not require grad and does not have a grad_fn</code></td><td>The training forward pass ran inside <code>torch.no_grad()</code></td><td>Use <code>no_grad</code> only for inference</td><td><a href="../lessons/0002-one-training-step.html">2</a></td></tr>
+<tr><td>Loss falls slowly and bumpily</td><td>No <code>optimizer.zero_grad()</code>, so gradients pile up across steps</td><td>Clear gradients every step</td><td><a href="../lessons/0002-one-training-step.html">2</a></td></tr>
+<tr><td><code>IndexError: index out of range in self</code> after masking</td><td><code>labels = input_ids</code> shares memory, so writing <code>-100</code> corrupted the inputs</td><td><code>labels = input_ids.clone()</code></td><td><a href="../lessons/0003-labels-and-masking.html">3</a></td></tr>
+<tr><td>Loss is high and mostly measures the prompt</td><td>Prompt tokens aren’t masked</td><td>Set the prompt positions to <code>-100</code>, or use prompt-completion data with <code>SFTTrainer</code></td><td><a href="../lessons/0003-labels-and-masking.html">3</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Data &amp; SFT</h2>
+<div class="table-wrap">
+<table class="fix">
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th><th>Lesson</th></tr></thead>
+<tbody>
+<tr><td><code>KeyError</code> for a column you just added with <code>map</code></td><td><code>map</code> returns a <em>new</em> dataset</td><td><code>train = train.map(...)</code></td><td><a href="../lessons/0004-a-dataset-for-chat.html">4</a></td></tr>
+<tr><td>JSON cut off mid-answer, or rows silently dropped</td><td><code>max_length</code> is shorter than your rows. Truncation keeps the start, so the completion is lost.</td><td>Measure token lengths and set <code>max_length</code> above the longest row</td><td><a href="../lessons/0004-a-dataset-for-chat.html">4</a></td></tr>
+<tr><td>The “before” score looks already trained</td><td><code>SFTTrainer</code> trains your model object in place</td><td>Score <em>before</em> training, or reload the model</td><td><a href="../lessons/0005-first-sft-run.html">5</a></td></tr>
+<tr><td>Colab’s progress table shows only the training loss</td><td>The notebook progress display is minimal</td><td><code>trainer.state.log_history</code> has every logged metric</td><td><a href="../lessons/0005-first-sft-run.html">5</a></td></tr>
+<tr><td>Right content, but not valid JSON (“JSON:”, code fences, prose)</td><td>The base model never learned your output format</td><td>That’s what SFT fixes. Measure it with the valid-JSON rate.</td><td><a href="../lessons/0001-tokens-in-tokens-out.html">1</a>, <a href="../lessons/0005-first-sft-run.html">5</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>LoRA, QLoRA &amp; memory</h2>
+<div class="table-wrap">
+<table class="fix">
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th><th>Lesson</th></tr></thead>
+<tbody>
+<tr><td><code>"_amp_foreach_non_finite_check_and_unscale_cuda" not implemented for 'BFloat16'</code></td><td>TRL 1.15 casts a 4-bit model’s adapters to bf16, and fp16 training can’t unscale bf16 gradients</td><td>After building the trainer, upcast the trainable params to fp32 (3 lines in Lesson 7)</td><td><a href="../lessons/0007-qlora-on-a-free-gpu.html">7</a></td></tr>
+<tr><td><code>You passed a PeftModel instance together with a peft_config</code></td><td>You called <code>get_peft_model</code> <em>and</em> passed <code>peft_config</code></td><td>Do only one of them</td><td><a href="../lessons/0006-lora.html">6</a></td></tr>
+<tr><td>Strange LoRA results or warnings after re-running cells</td><td>PEFT injects adapters into your model object in place</td><td>Reload the base model before training again</td><td><a href="../lessons/0006-lora.html">6</a></td></tr>
+<tr><td><code>CUDA out of memory</code></td><td>Weights + gradients + optimizer state + activations don’t fit</td><td>In order: smaller <code>per_device_train_batch_size</code> with more <code>gradient_accumulation_steps</code> → lower <code>max_length</code> → gradient checkpointing → LoRA → QLoRA</td><td><a href="../lessons/0007-qlora-on-a-free-gpu.html">7</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Evaluating &amp; shipping</h2>
+<div class="table-wrap">
+<table class="fix">
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th><th>Lesson</th></tr></thead>
+<tbody>
+<tr><td>LoRA model is slow at inference (about 2× slower in our test)</td><td>The adapter runs as extra layers beside every linear layer</td><td><code>merge_and_unload()</code> before serving. Save the adapter first, because merging also changes the wrapped base model.</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td>Permission error on push</td><td>Your token has the <em>Read</em> role</td><td>Create a token with the <em>Write</em> role</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td>Colab: access to the secret <code>HF_TOKEN</code> has not been granted</td><td>The secret’s notebook-access toggle is off</td><td>Turn it on in the Secrets panel, then restart the session</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td><code>card.push_to_hub</code> fails because the repo doesn’t exist</td><td>A model card can’t create a repo</td><td>Push the model (which creates the repo) first, then the card</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td>Your README was replaced by an auto-generated card</td><td>The model was pushed after the card</td><td>Push the card last</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td>Model card metadata missing on the Hub</td><td>The <code>---</code> YAML block was indented</td><td>Start the <code>---</code> lines at column 0</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+<tr><td><code>NameError</code> when you rerun a cell</td><td>An earlier cell ran <code>del x</code></td><td>Use <code>x = None</code> to free memory, so cells stay re-runnable</td><td><a href="../lessons/0009-ship-it.html">9</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="muted" style="font-size:.85rem">Hit something not listed? Search the exact error message first, then ask on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a> with your code and the full traceback. More places to ask are on the <a href="resources.html">further reading</a> page.</p>
+
+</main>
+</body>
+</html>

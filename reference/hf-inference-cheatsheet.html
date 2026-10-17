@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Load, Template, Generate</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; Transformers v5 &middot; verified on 5.19.0</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>Load, template, generate</h1>
+<p class="lede">Running a Hugging Face chat model, from checkpoint id to decoded reply. Taught in <a href="../lessons/0001-tokens-in-tokens-out.html">Lesson 1</a>.</p>
+
+<div class="ref-grid">
+<section>
+<h2>Load a matched pair</h2>
+<pre><code class="language-python">import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+model_id = "HuggingFaceTB/SmolLM2-135M-Instruct"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+tok = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id, dtype=torch.float32).to(device)   # already in eval mode</code></pre>
+<p>Always load both from the <strong>same id</strong>. The course loads small models in <code>torch.float32</code> because it runs anywhere. If you leave <code>dtype</code> out, v5 uses <code>"auto"</code>, the checkpoint’s saved precision (often bf16, which a T4 lacks natively). Older code calls this argument <code>torch_dtype</code>.</p>
+</section>
+
+<section>
+<h2>Chat template</h2>
+<pre><code class="language-python">messages = [
+  {"role": "system", "content": "..."},     # optional
+  {"role": "user", "content": "..."},
+]
+# As text, to inspect:
+text = tok.apply_chat_template(
+    messages, tokenize=False, add_generation_prompt=True)
+
+# As tensors, for the model:
+inputs = tok.apply_chat_template(
+    messages, add_generation_prompt=True,
+    return_tensors="pt", return_dict=True).to(device)</code></pre>
+<p><code>add_generation_prompt=True</code> appends the opening of the assistant turn. Use it at <em>inference</em> time.</p>
+</section>
+
+<section>
+<h2>Inspect tokens</h2>
+<pre><code class="language-python">ids = inputs["input_ids"]             # (batch, seq)
+tok.convert_ids_to_tokens(ids[0])     # ['&lt;|im_start|&gt;', 'system', 'Ċ', ...]
+tok.decode(ids[0])                    # back to text
+tok.eos_token, tok.eos_token_id       # '&lt;|im_end|&gt;', 2  (SmolLM2)
+len(tok)                              # vocab size</code></pre>
+<p><code>Ġ</code> marks a leading space and <code>Ċ</code> a newline (byte-level BPE).</p>
+</section>
+
+<section>
+<h2>One forward pass</h2>
+<pre><code class="language-python">with torch.no_grad():                 # no autograd bookkeeping
+    logits = model(**inputs).logits   # (batch, seq, vocab)
+
+next_id = logits[0, -1].argmax().item()   # greedy next token
+tok.decode([next_id])</code></pre>
+<p>Position <em>t</em> scores every token as the token at position <em>t+1</em>, so it’s a classifier at every position.</p>
+</section>
+
+<section>
+<h2>Generate &amp; decode</h2>
+<pre><code class="language-python">with torch.no_grad():
+    out = model.generate(**inputs, max_new_tokens=128,
+                         do_sample=False)   # greedy
+# out = prompt ids + new ids  -&gt;  slice off the prompt
+new_ids = out[0, inputs["input_ids"].shape[1]:]
+reply = tok.decode(new_ids, skip_special_tokens=True)</code></pre>
+<p>Sampling: <code>do_sample=True, temperature=0.7, top_p=0.9</code>. Generation stops at the EOS token or at <code>max_new_tokens</code>.</p>
+</section>
+
+<section>
+<h2>Shapes to remember</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Tensor</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td><code>input_ids</code>, <code>attention_mask</code></td><td><code>(batch, seq)</code></td></tr>
+<tr><td><code>logits</code></td><td><code>(batch, seq, vocab)</code></td></tr>
+<tr><td><code>generate()</code> output</td><td><code>(batch, seq + new)</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3>Transformers v5 notes</h3>
+<ul>
+<li><code>apply_chat_template(..., return_tensors="pt")</code> returns a <code>BatchEncoding</code> dict by default. Pass <code>return_dict=True</code> anyway so the code also works on v4.</li>
+<li><code>dtype=</code> replaces <code>torch_dtype=</code>.</li>
+</ul>
+</section>
+</div>
+
+<p class="sidenote">Sources: <a href="https://huggingface.co/docs/transformers/chat_templating">Chat templates</a> &middot; <a href="https://huggingface.co/docs/transformers/llm_tutorial">Text generation</a> &middot; <a href="https://huggingface.co/docs/transformers/model_doc/auto">Auto classes</a></p>
+
+</main>
+</body>
+</html>

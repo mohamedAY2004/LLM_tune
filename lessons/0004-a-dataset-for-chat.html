@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Dataset for Chat</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 4 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 4 &middot; about 25 minutes</p>
+<h1>A dataset for chat</h1>
+<p class="lede">Build train and test sets for TRL, Hugging Face’s library for fine-tuning chat models, and see the exact text supervised fine-tuning trains on.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll build a 500-row training set and a 40-row held-out test set with 🤗 Datasets, render one row through the chat template, and measure every row in tokens. Lesson 5 trains on exactly this data.</p>
+</div>
+
+<h2>From task to training set</h2>
+
+<h3>1 · Two shapes of chat data</h3>
+
+<p>TRL’s <code>SFTTrainer</code> accepts chat data in two shapes (<a href="https://huggingface.co/docs/trl/dataset_formats">dataset formats</a>). Here is one of our rows in each, with the user text shortened:</p>
+
+<pre><code class="language-python"># "messages": the whole chat in one list
+{"messages": [
+    {"role": "user", "content": "Extract ... Text: Hi, I'm Kenji from Oslo. I'm 66."},
+    {"role": "assistant", "content": '{"name": "Kenji", "age": 66, "city": "Oslo"}'}]}
+
+# prompt-completion: the same chat, split where the answer starts
+{"prompt":     [{"role": "user", "content": "Extract ... Text: Hi, I'm Kenji from Oslo. I'm 66."}],
+ "completion": [{"role": "assistant", "content": '{"name": "Kenji", "age": 66, "city": "Oslo"}'}]}</code></pre>
+
+<p>When I rendered both shapes through the chat template, the text was identical. The difference is <strong>which tokens the loss counts</strong>. By default, <code>SFTTrainer</code> computes the loss on the whole <code>messages</code> sequence, system prompt and user message included. For prompt-completion rows it computes the loss on the completion only (<a href="https://huggingface.co/docs/trl/sft_trainer#train-on-completion-only">SFT docs</a>). <mark>That’s your <a href="0003-labels-and-masking.html">Lesson 3</a> mask, for free</mark>, and it’s why the course’s <code>make_rows</code> returns prompt-completion rows.</p>
+
+<p>This is the training text for that row. The highlighted part is the completion, the only part the loss counts:</p>
+
+<pre><code class="nohighlight">&lt;|im_start|&gt;system
+You are a helpful AI assistant named SmolLM, trained by Hugging Face&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Extract the person's name, age and city as JSON.
+
+Text: Hi, I'm Kenji from Oslo. I'm 66.&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+<mark>{"name": "Kenji", "age": 66, "city": "Oslo"}&lt;|im_end|&gt;</mark>
+</code></pre>
+
+<p>Notice the closing <code>&lt;|im_end|&gt;</code> (and the newline after it) is part of the completion. Training on it is what teaches the model to <em>stop</em> after the JSON.</p>
+
+<h3>2 · A test set the model has never seen</h3>
+
+<p>A <strong>held-out test set</strong> is data the model never trains on. Ours goes further. <code>make_rows(n, "test")</code> draws from a separate pool of 5 names, 4 cities and 2 phrasings that never appear in training. In the notebook, the two splits share no names and no cities.</p>
+
+<div class="compare">
+  <div class="keras-side">
+    <p class="label keras">Keras: a slice of the same data</p>
+<pre><code class="language-python">model.fit(x, y, epochs=5,
+          validation_split=0.2)
+# validation = the last 20% of x, y:
+# same names, cities, phrasings</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">This course: a separate pool</p>
+<pre><code class="language-python">train = Dataset.from_list(
+    make_rows(500, "train", seed=0))
+test = Dataset.from_list(
+    make_rows(40, "test", seed=1))
+# test: unseen names, cities, phrasings</code></pre>
+  </div>
+</div>
+
+<p><span class="sidenote">Keras picks validation rows “from the last samples in the <code>x</code> and <code>y</code> data provided, before shuffling”. <a href="https://keras.io/api/models/model_training_apis/">Keras <code>fit</code> docs</a>.</span>
+Why bother? If test rows reused training names and phrasings, a model that had memorised “Kenji from Oslo” would look perfect. With unseen inputs, a high score means the skill <em>generalises</em>: read a new sentence, copy three fields into strict JSON.</p>
+
+<h3>3 · 🤗 Datasets in three moves</h3>
+
+<ul>
+  <li><code>Dataset.from_list(rows)</code> turns a list of dicts into a table with one column per key: <code>prompt</code> and <code>completion</code>.</li>
+  <li><strong>Indexing</strong>: <code>train[0]</code> is one row (a dict), <code>train["completion"]</code> is a column, <code>train[:2]</code> is a dict of lists.</li>
+  <li><code>train.map(fn)</code> runs <code>fn</code> on every row and adds the keys of the dict it returns as new columns. It returns a <em>new</em> dataset, so assign it: <code>train = train.map(fn)</code>.</li>
+</ul>
+
+<p><span class="sidenote"><code>SFTConfig</code>’s <code>max_length</code> defaults to 1024, and its truncation mode is <code>"keep_start"</code>. <a href="https://huggingface.co/docs/trl/sft_trainer#trl.SFTConfig">SFTConfig reference</a>.</span>
+You’ll use <code>map</code> to count each row’s tokens after templating. When I ran it, training rows were 77–91 tokens and test rows 83–90. That sets <code>max_length</code> in Lesson 5. The trainer cuts longer rows <em>from the end</em>, and the end is the answer. With <code>max_length=80</code>, the Kenji row’s trained tokens became <code>{"name": "Kenji", "age": 66, "city": "Os</code>. There’s no closing brace and no <code>&lt;|im_end|&gt;</code>, so the model never learns to stop. Lesson 5 uses 256, with plenty of room.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0004-a-dataset-for-chat.ipynb" download><code>0004-a-dataset-for-chat.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li>Any runtime works today. Only the tokenizer loads, so CPU is fine.</li>
+  <li>Fill in the four <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Note your longest row and your <code>max_length</code>. Lesson 5 needs them.</li>
+</ol>
+
+<p>When I tested the notebook, I got 500 training rows and 40 test rows, no names or cities shared between the splits, and a longest row of 91 tokens.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. Why does this course store its rows as prompt-completion instead of <code>messages</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="For prompt-completion data, SFTTrainer masks the prompt tokens with -100. That’s the Lesson 3 idea with no extra code.">By default the loss covers only the completion</li>
+    <li data-why="A `messages` list holds the whole chat, assistant turns included. The real difference is which tokens the loss counts.">The messages shape cannot hold an assistant reply</li>
+    <li data-why="Conversational rows of both shapes go through the chat template. Both render to the same text.">Prompt-completion rows skip the chat template at training</li>
+    <li data-why="Both shapes produce the same tokens, so the forward and backward passes cost about the same.">Prompt-completion rows train in about half the time</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. Every test name, city and phrasing is missing from the training set. What does a high test score show?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Nothing in the test rows can be recalled from training. Getting them right means the model learned the format and the copying skill.">The model learned the skill, not the rows</li>
+    <li data-why="Memorising training rows wouldn’t help: the test names, cities and phrasings never appeared in training.">The model memorised all five hundred training rows</li>
+    <li data-why="Training loss is measured on training rows. Only the held-out score tells you how the model handles new inputs.">The training loss went all the way down</li>
+    <li data-why="A random split reuses training names and phrasings, so memorising could pass it. Its score might look the same but would prove less.">A random split would give the same evidence</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. Your longest row is 91 tokens and you set <code>max_length=80</code>. What happens to that row in training?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Truncation keeps the start, so the last tokens go. In our rows those are the answer and `<|im_end|>`, so the model never learns to close the JSON and stop.">It loses the end of its JSON answer</li>
+    <li data-why="Truncation keeps the start and drops the end. The system prompt survives; the answer doesn’t.">It loses the system prompt at its start</li>
+    <li data-why="No error. Truncation is silent, which is why you measure lengths first.">The trainer raises an error before training starts</li>
+    <li data-why="SFTTrainer doesn’t split rows. The tokens past `max_length` are simply dropped.">It is split into two shorter training rows</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 3): you train with unmasked labels, so every token counts. What happens to the loss on the prompt tokens?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Unmasked, every prompt token is a target. In Lesson 3 the prompt loss fell from 4.17 to 0.26: updates spent on text the user always supplies.">It falls: the model learns to predict it</li>
+    <li data-why="That’s the masked run, where it stayed near 4.1. Unmasked, the prompt tokens are targets, so the model learns them.">It stays put, because the prompt never changes</li>
+    <li data-why="Nothing gives the answer extra weight. Every unmasked token is a target, so the prompt loss falls too.">It rises, because the answer gets more weight</li>
+    <li data-why="Unmasked labels contain no -100. Masking is what writes it; here every prompt token is still a target.">It drops to zero, since -100 skips it</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>add_length</code> is defined as in the notebook. Put the lines in order to build the training set and check that its longest row fits. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>rows = make_rows(500, "train", seed=0)</li>
+    <li>train = Dataset.from_list(rows)</li>
+    <li>train = train.map(add_length)</li>
+    <li>longest = max(train["n_tokens"])</li>
+    <li>print("fits in 256:", longest &lt;= 256)</li>
+    <li data-distractor>rows = make_rows(500, "test", seed=0)</li>
+    <li data-distractor>train.map(add_length)</li>
+  </ol>
+  <div class="parsons-explain"><p>Building training rows from the <code>"test"</code> split would put the held-out names and phrasings into training, so the test set would no longer measure generalisation. A bare <code>train.map(add_length)</code> throws its result away, because <code>map</code> returns a new dataset rather than changing <code>train</code> in place. The next line would then fail: there’s no <code>n_tokens</code> column.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: an interviewer asks, “How would you build the test set for a fine-tuned extractor, and why not just hold out 10% of your training rows?” Answer in two or three sentences.</p>
+  <div class="recall-a">
+    <p>I’d build test rows from inputs the model never trains on: different names, places and phrasings, ideally written separately from the training data. A random 10% split shares the training set’s names and templates, so a model that memorised them could score high without learning the skill. A truly separate set measures generalisation, which is what real users will test.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/trl/dataset_formats">TRL: Dataset formats and types</a>. Its first table shows every shape, and “Which dataset type to use?” lists what <code>SFTTrainer</code> accepts. Then skim the <a href="https://huggingface.co/docs/datasets/process#map">Map section of 🤗 Datasets “Process”</a>.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0003-labels-and-masking.html">&larr; Lesson 3</a>
+  <span><a href="../reference/sft-cheatsheet.html">Cheat sheet: SFT</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0005-first-sft-run.html">Next: Lesson 5 — your first SFT run &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

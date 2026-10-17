@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluate and Ship</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; verified on Transformers 5.19.0, PEFT 0.21.2, huggingface_hub 2.2.0</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>Evaluate and ship</h1>
+<p class="lede">Score honestly, find where the model breaks, then merge, push and document it. Taught in <a href="../lessons/0008-evaluating-an-extractor.html">Lesson 8</a> and <a href="../lessons/0009-ship-it.html">Lesson 9</a>, and used in the <a href="../lessons/0010-capstone.html">capstone</a>.</p>
+
+<div class="ref-grid">
+
+<section>
+<h2>Score one row (the core of <code>score()</code>)</h2>
+<pre><code class="language-python">inputs = tok.apply_chat_template(row["prompt"], add_generation_prompt=True,
+             return_tensors="pt", return_dict=True).to(model.device)
+with torch.no_grad():
+    out = model.generate(**inputs, max_new_tokens=40,
+                         do_sample=False)            # greedy: reproducible
+reply = tok.decode(out[0, inputs["input_ids"].shape[1]:],
+                   skip_special_tokens=True).strip()
+try:
+    pred = json.loads(reply); valid += 1             # format
+except json.JSONDecodeError:
+    pred = {}
+gold = json.loads(row["completion"][0]["content"])
+right += sum(pred.get(k) == v for k, v in gold.items())   # content</code></pre>
+<p>Raise <code>max_new_tokens</code> when the JSON gets longer (the capstone uses 60).</p>
+</section>
+
+<section>
+<h2>Metrics</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Metric</th><th>Definition</th><th>Measures</th></tr></thead>
+<tbody>
+<tr><td>valid-JSON rate</td><td>replies that <code>json.loads</code> accepts ÷ rows</td><td>format</td></tr>
+<tr><td>field accuracy</td><td>exactly matching field values ÷ (rows × fields)</td><td>content</td></tr>
+</tbody>
+</table>
+</div>
+<p>Report both. Format can pass while content fails, but not the reverse: a reply that doesn’t parse scores zero fields. A field the message lacks should be <code>null</code>, and <code>pred.get(k) == None</code> also counts an omitted key as right.</p>
+</section>
+
+<section>
+<h2>An honest before/after table</h2>
+<ul>
+<li>Score the <strong>base model first</strong>. Training changes the model in place.</li>
+<li>Use the <strong>same rows</strong> for both models. Different rows differ in difficulty (the base model scored 0.575 on one set and 0.025 on another).</li>
+<li>Report <strong>held-out</strong> rows: unseen names, values and phrasings. A training-row score only shows the model learned its data.</li>
+<li>Use <strong>greedy</strong> decoding (<code>do_sample=False</code>).</li>
+<li>Small test sets are coarse: with 40 rows, one row is 2.5 points.</li>
+</ul>
+</section>
+
+<section>
+<h2>Stress-test checklist</h2>
+<p>Write <code>(message, expected_json)</code> pairs that break the training pattern, then run them greedily:</p>
+<ul>
+<li>a field left out entirely → expect <code>null</code></li>
+<li>another number in the sentence (“has 3 kids”, “in 2019”)</li>
+<li>two-word names and cities (“Hana Tanaka”, “Rio de Janeiro”)</li>
+<li>typos, lowercase, no punctuation</li>
+<li>another language, or chit-chat around the facts</li>
+<li>values that need reasoning (“born in 1990”, “mid-thirties”)</li>
+<li>two people in one message, and an instruction hidden in the text</li>
+</ul>
+<p>Only report failures you actually ran. In Lesson 8, the age in words and the French sentence both passed.</p>
+</section>
+
+<section>
+<h2>Failure tags</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Tag</th><th>What happened</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>format</code></td><td>reply isn’t valid JSON</td><td>more or cleaner output examples</td></tr>
+<tr><td><code>invented</code></td><td>value absent from the message, model made one up</td><td>training rows with the field missing → <code>null</code></td></tr>
+<tr><td><code>wrong_value</code></td><td>value present, model copied the wrong thing or part of it</td><td>training rows with that pattern</td></tr>
+<tr><td><code>out_of_scope</code></td><td>the schema has no right answer</td><td>decide a rule; put it in the prompt and the card</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Merge, save, reload, re-score</h2>
+<pre><code class="language-python">from peft import PeftModel
+base = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float32)
+merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()
+
+merged.save_pretrained(out_dir)
+tok.save_pretrained(out_dir)          # the chat template lives here
+shipped = AutoModelForCausalLM.from_pretrained(out_dir, dtype=torch.float32)
+assert score(shipped, tok, test_rows) == lora_scores</code></pre>
+<p><code>merge_and_unload()</code> returns a plain Transformers model. It also modifies the wrapped base model, so save the adapter first if you still need it.</p>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Ship the…</th><th>When</th><th>Size (360M, r=8, fp32)</th></tr></thead>
+<tbody>
+<tr><td>merged model</td><td>anyone should load it with plain Transformers; no adapter overhead</td><td>1,447 MB</td></tr>
+<tr><td>adapter</td><td>size matters; many tasks on one base</td><td>17 MB</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Push to the Hub</h2>
+<ol>
+<li>Create a token with the <strong>Write</strong> role at <a href="https://huggingface.co/settings/tokens">huggingface.co/settings/tokens</a>.</li>
+<li>Colab: key icon → secret <code>HF_TOKEN</code> → turn on notebook access. Elsewhere: <code>huggingface_hub.login()</code>.</li>
+</ol>
+<pre><code class="language-python">from huggingface_hub import get_token, whoami
+assert get_token(), "no token found"
+repo_id = f"{whoami()['name']}/my-extractor"
+
+shipped.push_to_hub(repo_id)   # creates the repo if needed
+tok.push_to_hub(repo_id)
+card.push_to_hub(repo_id)      # last: a model push into an
+                               # empty repo writes its own README</code></pre>
+<p><code>push_to_hub(repo_id, private=True)</code> makes a <em>new</em> repo private. <code>ModelCard.push_to_hub</code> can’t create a repo.</p>
+</section>
+
+<section>
+<h2>Load it back</h2>
+<pre><code class="language-python"># merged model: three lines, plain Transformers
+from transformers import pipeline
+extractor = pipeline("text-generation", model=repo_id)
+extractor([{"role": "user", "content": prompt}], max_new_tokens=40)[0]["generated_text"][-1]["content"]
+
+# adapter only: PEFT fetches the base model for you
+from peft import AutoPeftModelForCausalLM
+model = AutoPeftModelForCausalLM.from_pretrained(adapter_repo_or_dir)</code></pre>
+<p>A chat-format pipeline returns the whole conversation. The last message is the reply.</p>
+</section>
+
+<section>
+<h2>Model card template</h2>
+<pre><code class="language-python">from huggingface_hub import ModelCard
+card = ModelCard(f"""---
+base_model: {model_id}
+library_name: transformers
+license: apache-2.0
+pipeline_tag: text-generation
+tags: [json, information-extraction, sft]
+---
+
+# {repo_id}
+
+What it does, in one sentence. A three-line usage example.
+
+## Training data
+What, how many rows, how it was made.
+
+## Evaluation
+| model | valid-JSON rate | field accuracy |
+|---|---|---|
+| base | {before['valid_json']:.2f} | {before['field_accuracy']:.2f} |
+| this model | {after['valid_json']:.2f} | {after['field_accuracy']:.2f} |
+
+## Intended use
+## Limitations
+Your failure tags, in plain words.
+""")
+card.save(f"{out_dir}/README.md")</code></pre>
+<p>Keep the <code>---</code> block <strong>unindented at the very top</strong>, or the metadata is silently dropped. <code>base_model</code> links your model to its parent on the Hub.</p>
+</section>
+
+</div>
+
+<p class="sidenote">Sources: <a href="https://github.com/huggingface/evaluation-guidebook/blob/main/contents/automated-benchmarks/designing-your-automatic-evaluation.md">Evaluation guidebook</a> &middot; <a href="https://huggingface.co/docs/peft/package_reference/lora">PEFT LoRA (merge)</a> &middot; <a href="https://huggingface.co/docs/transformers/model_sharing">Transformers: Share</a> &middot; <a href="https://huggingface.co/docs/huggingface_hub/quick-start">huggingface_hub quick start</a> &middot; <a href="https://huggingface.co/docs/huggingface_hub/guides/model-cards">Model cards (API)</a> &middot; <a href="https://huggingface.co/docs/hub/model-cards">Model cards (Hub)</a> &middot; <a href="https://huggingface.co/docs/hub/security-tokens">Access tokens</a></p>
+
+</main>
+</body>
+</html>

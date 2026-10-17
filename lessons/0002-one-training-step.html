@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Training Step</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 2 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 2 &middot; about 25 minutes</p>
+<h1>One training step by hand</h1>
+<p class="lede">Write the PyTorch training loop that <code>model.fit()</code> used to hide, and fix the reply that failed in Lesson 1.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll write the training loop yourself and run it on a single example. In Lesson 1, <code>SmolLM2-135M-Instruct</code> wrapped its answer in a label, code fences and prose. After 30 training steps, the same model answers the same question with exactly <code>{"name": "Sara", "city": "Cairo"}</code>.</p>
+</div>
+
+<h2>What <code>fit()</code> was doing for you</h2>
+
+<h3>1 · The loop, line by line</h3>
+
+<p>In Keras you call <code>compile</code> once, and <code>fit</code> runs the loop. In PyTorch you write the loop yourself. It’s short, and every line maps to something <code>fit</code> did.</p>
+
+<div class="compare wide">
+  <div class="keras-side">
+    <p class="label keras">Keras — fit() runs the loop</p>
+<pre><code class="language-python">model.compile(
+    optimizer=keras.optimizers.AdamW(5e-5),
+    loss=loss_fn)
+model.fit(x, y, epochs=30)
+
+# what fit() does for every batch:
+with tf.GradientTape() as tape:
+    preds = model(x, training=True)
+    loss = loss_fn(y, preds)
+grads = tape.gradient(loss, model.trainable_weights)
+optimizer.apply(grads, model.trainable_weights)</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">PyTorch + Hugging Face — you write it</p>
+<pre><code class="language-python">optimizer = torch.optim.AdamW(
+    model.parameters(), lr=5e-5)
+
+model.train()                  # ~ training=True
+for step in range(30):
+    out = model(**batch,
+                labels=batch["input_ids"])
+    out.loss.backward()        # ~ tape.gradient
+    optimizer.step()           # ~ optimizer.apply
+    optimizer.zero_grad()      # ~ a fresh tape</code></pre>
+  </div>
+</div>
+
+<p><span class="sidenote">The PyTorch tutorial calls these three lines the optimization step: backward “deposits the gradients”, <code>step()</code> “adjusts the parameters”, and gradients are zeroed because they “add up”. <a href="https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html">Optimizing Model Parameters</a>.</span>
+You hand the optimizer <code>model.parameters()</code>, the tensors it may change, much as Keras uses <code>model.trainable_weights</code>. Then each step has three lines:</p>
+<ul>
+  <li><code>loss.backward()</code> computes the gradient of the loss for every parameter and stores it in that parameter’s <code>.grad</code>.</li>
+  <li><code>optimizer.step()</code> uses those gradients to update the weights. <a href="https://docs.pytorch.org/docs/stable/generated/torch.optim.AdamW.html">AdamW</a> is Adam with weight decay applied separately.</li>
+  <li><code>optimizer.zero_grad()</code> clears the gradients, for a reason explained in section 3.</li>
+</ul>
+
+<h3>2 · Pass <code>labels</code>, get a loss</h3>
+
+<p>Hugging Face causal-LM models compute the loss for you: pass <code>labels</code> and read <code>out.loss</code>. For a causal LM, the labels are simply the input tokens. You don’t shift them yourself. Inside the model, the prediction at position <em>t</em> is scored against the token at position <em>t</em>+1:</p>
+
+<pre><code class="language-plaintext">position:  0             1        2     3     …   62           63
+input:     &lt;|im_start|&gt;  system   \n    You   …   "}           &lt;|im_end|&gt;
+target:    system        \n       You   are   …   &lt;|im_end|&gt;   \n</code></pre>
+
+<p><span class="sidenote">“Shifting the inputs and labels to align them happens inside the model.” <a href="https://huggingface.co/learn/llm-course/chapter7/6">HF LLM Course, ch. 7.6</a>. The last position (64 here) has nothing after it, so it’s dropped.</span>
+That’s the same cross-entropy as a Keras classifier with <code>SparseCategoricalCrossentropy(from_logits=True)</code>, applied at every position and averaged. The notebook proves it: computing <code>F.cross_entropy(logits[0, :-1], ids[0, 1:])</code> by hand gives the same number as <code>out.loss</code>. When I ran it, both printed 3.5153.</p>
+
+<p>This loss counts every token, including the system prompt and the question. Lesson 3 shows why you want only the answer.</p>
+
+<h3>3 · Two PyTorch habits: train mode and <code>zero_grad</code></h3>
+
+<p><span class="sidenote">“Evaluation mode is not a mechanism to locally disable gradient computation.” <a href="https://docs.pytorch.org/docs/stable/notes/autograd.html#evaluation-mode-nn-module-eval">PyTorch autograd notes</a>.</span>
+<code>model.train()</code> and <code>model.eval()</code> are Keras’s <code>training=True</code> and <code>training=False</code>. They switch layers such as dropout between training and inference behaviour. <code>from_pretrained</code> returns the model in eval mode, so call <code>model.train()</code> before the loop and <code>model.eval()</code> before generating. SmolLM2’s config sets its dropout to 0, so here the switch changes nothing you can see. Do it anyway: many models use dropout, and the LoRA adapters in Lesson 6 have their own. Also, <code>eval()</code> doesn’t turn off gradients. <code>torch.no_grad()</code> does that.</p>
+
+<p>Why <code>zero_grad()</code>? PyTorch <em>adds</em> each new gradient to whatever is already in <code>.grad</code>. That’s deliberate: it lets you sum gradients over several small batches to simulate a bigger one. In a normal loop you clear them after each update. Otherwise every step uses the sum of all past gradients, not the current one. When I left it out, AdamW still got there, but more slowly and less smoothly: the loss after 30 steps was 0.0198 instead of 0.0044.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0002-one-training-step.ipynb" download><code>0002-one-training-step.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>.</li>
+  <li>Fill in the three <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Run the final check. Is the reply exactly the target JSON?</li>
+</ol>
+
+<p>When I ran the solved notebook in fp32 on an RTX 3050 Ti laptop GPU, the loss fell from 3.52 to 0.0044 in 30 steps, which took 4.9 seconds. The reply was exactly the target JSON. Peak GPU memory was 2.9 GB, far below a T4’s 16 GB.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. You call <code>model(**batch, labels=batch["input_ids"])</code>. The labels are the inputs, not shifted. Why does this work?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Hugging Face causal-LM models drop the last prediction and the first label, so position t is scored against token t+1.">The model shifts the labels by one internally</li>
+    <li data-why="The tokenizer only turns text into ids. It never builds labels or shifts anything.">The tokenizer already shifted them while encoding text</li>
+    <li data-why="A causal LM always predicts the NEXT token. That’s exactly why a shift is needed, and the model does it for you.">Causal models predict the current token, not next</li>
+    <li data-why="The chat template only formats the conversation as text. The shift happens inside the model’s loss.">The chat template inserts the shift for you</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. What happens if your loop never calls <code>optimizer.zero_grad()</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="PyTorch accumulates into `.grad`, so each update uses the running sum of every gradient so far, not the current one.">Each step uses the sum of all gradients</li>
+    <li data-why="`zero_grad` touches only the gradients. The weights keep every update.">The weights reset to pretrained values every step</li>
+    <li data-why="No error is raised. The gradients silently pile up, which is what makes this bug easy to miss.">PyTorch raises an error at the second step</li>
+    <li data-why="PyTorch never clears gradients on its own. That’s why the call exists.">Nothing changes, because PyTorch clears gradients for you</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. You call <code>model.eval()</code> before generating. What does that change?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Like Keras’s `training=False`: dropout and similar layers switch to inference behaviour. Gradient tracking is a separate switch.">Layers like dropout switch to inference behaviour</li>
+    <li data-why="That’s `torch.no_grad()`. Eval mode and gradient tracking are independent.">PyTorch stops recording operations for gradient computation</li>
+    <li data-why="The optimizer updates whatever parameters you gave it. Eval mode doesn’t freeze anything.">The optimizer freezes all of the weights</li>
+    <li data-why="Device placement only changes with `.to(device)`.">The model and inputs move to CPU</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 1): what does <code>add_generation_prompt=True</code> add to the rendered text?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="It appends `&lt;|im_start|&gt;assistant` and a newline, so the model knows it’s its turn. Training examples already contain the assistant turn, so they skip it.">The opening of the assistant’s turn</li>
+    <li data-why="SmolLM2’s template adds its default system prompt either way. The flag controls only the assistant opener.">A default system prompt message first</li>
+    <li data-why="The end-of-turn token closes each existing message. The flag adds an opening, not a closing.">An end-of-turn token closing the message</li>
+    <li data-why="Padding is a tokenizer option. The flag only adds the assistant opener.">Padding up to the maximum length</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>batch</code> is ready and <code>model.train()</code> was already called. Put the lines in order so that each step ends by clearing the gradients. One line doesn’t belong.</p>
+  <ol class="parsons-lines">
+    <li>optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)</li>
+    <li>for step in range(30):</li>
+    <li>    out = model(**batch, labels=batch["input_ids"])</li>
+    <li>    out.loss.backward()</li>
+    <li>    optimizer.step()</li>
+    <li>    optimizer.zero_grad()</li>
+    <li data-distractor>    out = model(**batch)</li>
+  </ol>
+  <div class="parsons-explain"><p>Without <code>labels</code>, the model returns logits but <code>out.loss</code> is <code>None</code>, so there’s nothing to call <code>backward()</code> on. The optimizer is created once, before the loop. Created inside the loop, it would throw away AdamW’s running averages at every step.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory, as if in an interview: “Walk me through one training step for a causal LM in PyTorch. What did Keras’s <code>fit()</code> do for you that you now write yourself?”</p>
+  <div class="recall-a">
+    <p>Put the model in train mode. Run a forward pass with <code>labels</code> set to the input ids. The model shifts them internally and returns the mean cross-entropy of predicting each next token. <code>loss.backward()</code> computes the gradients into each parameter’s <code>.grad</code>, <code>optimizer.step()</code> updates the weights (AdamW here), and <code>optimizer.zero_grad()</code> clears the gradients, because PyTorch accumulates them. <code>fit()</code> did all of this for every batch: the forward pass in training mode, the gradient tape, the optimizer update, and the loop itself. For generation, switch to <code>model.eval()</code> and wrap the call in <code>torch.no_grad()</code>.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html">PyTorch, “Optimizing Model Parameters”</a>. It’s the official version of today’s loop, including <code>zero_grad()</code>. For the bridge from Keras, see the end-to-end example in <a href="https://keras.io/guides/writing_a_custom_training_loop_in_torch/">Keras: Writing a training loop from scratch in PyTorch</a>. Note its warning that PyTorch losses take <code>(y_pred, y_true)</code>, the reverse of Keras.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0001-tokens-in-tokens-out.html">&larr; Lesson 1</a>
+  <span><a href="../reference/training-loop.html">Cheat sheet: training loop &amp; labels</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0003-labels-and-masking.html">Next: Lesson 3 — labels &amp; masking &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

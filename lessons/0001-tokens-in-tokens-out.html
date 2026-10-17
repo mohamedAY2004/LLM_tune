@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tokens In, Tokens Out</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 1 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 1 &middot; about 25 minutes</p>
+<h1>Tokens in, tokens out</h1>
+<p class="lede">Load a chat model with Hugging Face, see exactly what it reads, and watch it fail at the task you’ll fine-tune it for.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>In a Colab notebook you’ll load <code>SmolLM2-135M-Instruct</code>, print the exact string it reads, predict its next token by hand, and generate a reply. Then you’ll check whether that reply is valid JSON. That check is the first measurement for your capstone.</p>
+</div>
+
+<h2>The Keras picture you already have</h2>
+
+<p>You’ve done transfer learning in Keras: load a pretrained network, push inputs through its matching preprocessing, read the output. Hugging Face works the same way, with two differences. The “preprocessing” is a <strong>tokenizer</strong>, and the output is a score for every token in the vocabulary, not one class per image.</p>
+
+<div class="compare wide">
+  <div class="keras-side">
+    <p class="label keras">Keras — image classifier</p>
+<pre><code class="language-python">from tensorflow import keras
+
+base = keras.applications.ResNet50(
+    weights="imagenet")
+x = keras.applications.resnet50 \
+        .preprocess_input(images)
+
+probs = base.predict(x)   # (batch, 1000)
+top = probs.argmax(-1)    # one class each</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">PyTorch + Hugging Face — chat LLM</p>
+<pre><code class="language-python">from transformers import AutoTokenizer, AutoModelForCausalLM
+
+tok = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id)
+inputs = tok.apply_chat_template(
+    messages, add_generation_prompt=True,
+    return_tensors="pt", return_dict=True)
+
+with torch.no_grad():
+    logits = model(**inputs).logits  # (batch, seq, vocab)
+next_id = logits[0, -1].argmax()     # next token</code></pre>
+  </div>
+</div>
+
+<p><span class="sidenote">The <code>Auto*</code> classes read the checkpoint’s <code>config.json</code> and build the right architecture for you: <code>LlamaForCausalLM</code> for SmolLM2. <a href="https://huggingface.co/docs/transformers/model_doc/auto">Auto classes docs</a>.</span>
+The tokenizer and the model are a <strong>matched pair</strong>. Always load both from the same checkpoint id. A token id is just a row number in the model’s embedding table, so a tokenizer from another model points at the wrong rows. Nothing crashes, but the output is garbage.</p>
+
+<h2>The pipeline, end to end</h2>
+
+<div class="pipeline wide" role="img" aria-label="messages to chat template to token ids to model to logits to next token, repeated">
+  <span class="step">messages<em>list of dicts</em></span><span class="arrow">&rarr;</span>
+  <span class="step">chat template<em>one string</em></span><span class="arrow">&rarr;</span>
+  <span class="step">input_ids<em>(1, 49)</em></span><span class="arrow">&rarr;</span>
+  <span class="step">model<em>forward pass</em></span><span class="arrow">&rarr;</span>
+  <span class="step">logits<em>(1, 49, 49152)</em></span><span class="arrow">&rarr;</span>
+  <span class="step">argmax at last position<em>next token</em></span><span class="arrow">&#8635;</span>
+  <span class="step">append &amp; repeat<em>= generate()</em></span>
+</div>
+
+<h3>1 · The chat template is what the model actually reads</h3>
+
+<p>A chat model never sees your list of messages. The tokenizer’s template flattens the conversation into one string, with special tokens marking who is speaking. This is what SmolLM2 actually read when I ran it:</p>
+
+<pre><code class="language-plaintext">&lt;|im_start|&gt;system
+You are a helpful AI assistant named SmolLM, trained by Hugging Face&lt;|im_end|&gt;
+&lt;|im_start|&gt;user
+Extract the person's name and city as JSON: 'Hi, I'm Sara from Cairo.'&lt;|im_end|&gt;
+&lt;|im_start|&gt;assistant
+</code></pre>
+
+<p><span class="sidenote">Each model family has its own template, stored with its tokenizer. So call the tokenizer’s template; never build the string by hand. <a href="https://huggingface.co/docs/transformers/chat_templating">Chat templates docs</a>.</span>
+Three things to notice. First, a <strong>system prompt you didn’t write</strong> was added by the template. Second, every turn is wrapped in <code>&lt;|im_start|&gt;</code>…<code>&lt;|im_end|&gt;</code>. Third, <code>add_generation_prompt=True</code> appended the final <code>&lt;|im_start|&gt;assistant</code> line, which tells the model it’s its turn.</p>
+
+<p>This matters for fine-tuning because <mark>fine-tuning data has to go through the same template the model sees at inference</mark>. Training on a different format is one of the most common supervised fine-tuning (SFT) bugs, and it fails silently.</p>
+
+<h3>2 · Logits: a classifier at every position</h3>
+
+<p>The forward pass returns <code>logits</code> of shape <code>(batch, sequence, vocab)</code>. In our case that’s <code>(1, 49, 49152)</code>: for each of the 49 positions, a score for every one of the 49,152 tokens in the vocabulary as the <em>next</em> token. In Keras terms, it’s a <code>Dense(vocab_size)</code> head applied at every timestep.</p>
+
+<p><span class="sidenote">Lesson 2 builds on this: training is cross-entropy between these logits and the token that actually came next, at every position.</span>
+To predict what comes <em>after</em> the prompt, read the <strong>last</strong> position and take the argmax. <code>generate()</code> does exactly that in a loop: pick a token, append it, run again. It stops at the end-of-turn token (<code>&lt;|im_end|&gt;</code>) or at <code>max_new_tokens</code>. <a href="https://huggingface.co/docs/transformers/llm_tutorial">Text generation guide</a>.</p>
+
+<h3>3 · Just enough PyTorch (and Transformers v5)</h3>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>You want to…</th><th>Keras / TF</th><th>PyTorch</th></tr></thead>
+  <tbody>
+    <tr><td>Put work on the GPU</td><td>Automatic</td><td><code>model.to(device)</code> <em>and</em> <code>inputs.to(device)</code>. Both have to be on the same device.</td></tr>
+    <tr><td>Run without tracking gradients</td><td><code>model.predict(x)</code></td><td><code>with torch.no_grad(): model(**inputs)</code></td></tr>
+    <tr><td>Turn off dropout etc.</td><td><code>training=False</code></td><td><code>model.eval()</code>. <code>from_pretrained</code> already does this for you.</td></tr>
+    <tr><td>Index a tensor</td><td><code>x[0, -1]</code></td><td><code>x[0, -1]</code>, the same NumPy-style slicing</td></tr>
+    <tr><td>Get a Python number</td><td><code>x.numpy()</code></td><td><code>x.item()</code> for scalars, <code>x.cpu().numpy()</code> for arrays</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><span class="sidenote"><a href="https://docs.pytorch.org/docs/stable/generated/torch.no_grad.html"><code>torch.no_grad()</code></a> also saves memory: nothing is stored for a backward pass.</span>
+<code>model(**inputs)</code> unpacks the dict, so it’s the same as <code>model(input_ids=…, attention_mask=…)</code>. You’ll see this <code>**</code> idiom everywhere in Hugging Face code.</p>
+
+<p>Two <strong>Transformers v5</strong> notes. Pass <code>return_dict=True</code> to <code>apply_chat_template</code>: v5 returns a dict anyway, but many older tutorials got a bare tensor. And <code>from_pretrained</code> now loads the checkpoint’s saved precision, bfloat16 for SmolLM2 (<a href="https://github.com/huggingface/transformers/blob/main/MIGRATION_GUIDE_V5.md">v5 migration guide</a>). The free Colab T4 has no native bfloat16 (bf16) support, and the model is tiny, so the notebook asks for full precision: <code>dtype=torch.float32</code>. Older code calls this argument <code>torch_dtype</code>.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0001-tokens-in-tokens-out.ipynb" download><code>0001-tokens-in-tokens-out.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li>Optional: <em>Runtime → Change runtime type → T4 GPU</em>. The model is small enough for CPU too.</li>
+  <li>Fill in the four <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Run the final cell. Is the reply valid JSON? Note the result for later.</li>
+</ol>
+
+<p>When I tested the notebook, the model got the content right (<code>"name": "Sara", "city": "Cairo"</code>) but wrapped it in a “JSON:” label, markdown fences and an extra sentence, so <code>json.loads</code> failed. Your exact reply may differ. The model has the knowledge but not the <em>format discipline</em>, and teaching format is what SFT does best.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. You load a tokenizer from checkpoint A and a model from checkpoint B. What’s the most likely result?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="A token id is a row index into the model’s embedding table. Ids from another vocabulary land on unrelated rows, so the output is garbage, usually without an error.">Token IDs map to wrong embeddings</li>
+    <li data-why="Nothing translates between vocabularies. Each checkpoint’s tokenizer and embeddings were trained together.">Transformers converts the vocabulary for you</li>
+    <li data-why="Speed isn’t the problem. The ids point at the wrong embeddings, so the output is meaningless.">Generation runs slower but stays correct</li>
+    <li data-why="The template belongs to the tokenizer, so it would be used. The real problem is the id-to-embedding mismatch.">The chat template gets silently ignored</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. <code>logits.shape</code> is <code>(1, 49, 49152)</code>. What does 49152 represent?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The last axis is the vocabulary: one score per possible next token, at every position.">Scores for every token in vocabulary</li>
+    <li data-why="The prompt length is the middle axis (49).">Number of tokens in the prompt</li>
+    <li data-why="Hidden size is internal (576 for this model). Logits are projected out to vocabulary size.">Hidden size of each transformer layer</li>
+    <li data-why="Context length is a config limit, not a tensor axis here. The last axis is the vocabulary.">Maximum context length of the model</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. Why does the chat template matter so much for fine-tuning?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The model learns patterns in the exact token sequences it’s trained on. If inference uses a different format, the learned behaviour doesn’t carry over.">Training text must match inference format</li>
+    <li data-why="Templating adds a few tokens. It has nothing to do with speed.">It makes tokenization run much faster</li>
+    <li data-why="You still need labels (next tokens). The template only formats the text.">It removes the need for labels</li>
+    <li data-why="It adds a few tokens, so if anything memory goes up slightly. It’s about format, not memory.">It lowers memory use during training</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. What does the tensor returned by <code>model.generate(**inputs)</code> contain?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="That’s why you slice from `prompt_len` onwards before decoding.">The prompt IDs plus generated IDs</li>
+    <li data-why="For decoder-only models it also includes the prompt, which is why you slice.">Only the freshly generated token IDs</li>
+    <li data-why="It returns token ids. You call `tokenizer.decode` to get text.">Decoded text of the full reply</li>
+    <li data-why="By default it returns ids. Scores are only included if you ask for them.">Logits for each newly generated token</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. The model and tokenizer are already loaded. Put the lines in order to get a clean reply. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>messages = [{"role": "user", "content": prompt}]</li>
+    <li>inputs = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt", return_dict=True).to(device)</li>
+    <li>out_ids = model.generate(**inputs, max_new_tokens=80, do_sample=False)</li>
+    <li>new_ids = out_ids[0, inputs["input_ids"].shape[1]:]</li>
+    <li>reply = tok.decode(new_ids, skip_special_tokens=True)</li>
+    <li data-distractor>inputs = tok(prompt, return_tensors="pt")</li>
+    <li data-distractor>model.compile(optimizer="adam")</li>
+  </ol>
+  <div class="parsons-explain"><p>Calling <code>tok(prompt)</code> on raw text skips the chat template. You get bare tokens like <code>['Hi', 'Ġthere']</code> with no <code>&lt;|im_start|&gt;</code> markers, so the model never sees the turn structure it was trained on. <code>compile</code> is Keras thinking: PyTorch models have no compile/fit step. You’ll write the training loop yourself in Lesson 2.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: you’re in an interview and asked “What does a causal LM output, and how does <code>generate()</code> use it?” Answer in two or three sentences.</p>
+  <div class="recall-a">
+    <p>It outputs logits of shape <code>(batch, seq, vocab)</code>: at every position, a score for each vocabulary token as the next token. Effectively it’s a softmax classifier at every timestep. <code>generate()</code> takes the logits at the <em>last</em> position, picks a token (argmax for greedy, or sampling), appends it to the sequence, and repeats until an end-of-turn token or <code>max_new_tokens</code>.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/learn/llm-course/chapter2/2">Hugging Face LLM Course, Chapter 2: “Behind the pipeline”</a>. It walks through tokenizer → model → post-processing with the same Auto classes. Then skim <a href="https://huggingface.co/docs/transformers/chat_templating">Chat templates</a> in the Transformers docs. You’ll lean on it heavily once fine-tuning starts.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="../index.html">&larr; Course home</a>
+  <span><a href="../reference/hf-inference-cheatsheet.html">Cheat sheet: load, template, generate</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0002-one-training-step.html">Next: Lesson 2 — one training step by hand &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

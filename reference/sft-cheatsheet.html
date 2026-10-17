@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFT Cheat Sheet</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; verified on TRL 1.15.0, Transformers 5.19.0, Datasets 5.1.0</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>Dataset to fine-tuned model</h1>
+<p class="lede">Chat data for TRL, one <code>SFTTrainer</code> run, and a before/after score. Taught in <a href="../lessons/0004-a-dataset-for-chat.html">Lesson 4</a> and <a href="../lessons/0005-first-sft-run.html">Lesson 5</a>.</p>
+
+<div class="ref-grid">
+<section>
+<h2>Two chat shapes</h2>
+<pre><code class="language-python"># messages: loss on the WHOLE sequence by default
+{"messages": [{"role": "user", "content": "..."},
+              {"role": "assistant", "content": "..."}]}
+
+# prompt-completion: loss on the COMPLETION only by default
+{"prompt":     [{"role": "user", "content": "..."}],
+ "completion": [{"role": "assistant", "content": "..."}]}</code></pre>
+<p>Both render to the same text. Prompt-completion gives you the <code>-100</code> prompt mask for free (<code>completion_only_loss=None</code> means “auto”). This course uses it.</p>
+</section>
+
+<section>
+<h2>Rows to a <code>Dataset</code></h2>
+<pre><code class="language-python">from datasets import Dataset
+
+train = Dataset.from_list(make_rows(500, "train", seed=0))
+test  = Dataset.from_list(make_rows(40, "test", seed=1))
+
+train[0]              # one row: a dict
+train["completion"]   # one column
+train[:2]             # dict of lists</code></pre>
+<p>The test split uses unseen names, cities and phrasings, so it measures generalisation. A random slice of the training data wouldn’t.</p>
+</section>
+
+<section>
+<h2>See the training text</h2>
+<pre><code class="language-python">chat = row["prompt"] + row["completion"]
+text = tok.apply_chat_template(chat, tokenize=False)
+
+# The prompt alone, as at inference:
+p = tok.apply_chat_template(row["prompt"], tokenize=False,
+                            add_generation_prompt=True)
+text[len(p):]   # the completion: what the loss counts
+# '{"name": "Kenji", ...}&lt;|im_end|&gt;\n'</code></pre>
+<p>Leave <code>add_generation_prompt</code> off for training text: the reply is already there.</p>
+</section>
+
+<section>
+<h2>Measure lengths with <code>map</code></h2>
+<pre><code class="language-python">def add_length(row):
+    ids = tok.apply_chat_template(
+        row["prompt"] + row["completion"],
+        return_dict=True)["input_ids"]
+    return {"n_tokens": len(ids)}
+
+train = train.map(add_length)   # returns a NEW dataset
+max(train["n_tokens"])          # 91 for our task</code></pre>
+<p>Pick <code>max_length</code> above the longest row. Truncation keeps the start, so a short cap cuts the <em>answer</em> and its <code>&lt;|im_end|&gt;</code>.</p>
+</section>
+
+<section>
+<h2><code>SFTConfig</code>, T4-safe</h2>
+<pre><code class="language-python">from trl import SFTConfig, SFTTrainer
+
+args = SFTConfig(
+    output_dir="sft-smollm2-135m",
+    num_train_epochs=1,             # default 3
+    per_device_train_batch_size=8,  # Keras batch_size
+    learning_rate=5e-5,             # default 2e-5
+    max_length=256,                 # default 1024
+    bf16=False,                     # default True; T4 has no bf16
+    logging_steps=10,
+    save_strategy="no",
+    report_to="none",
+)</code></pre>
+<p>Other <code>SFTConfig</code> defaults that differ from <code>TrainingArguments</code>: <code>gradient_checkpointing=True</code>, <code>logging_steps=10</code>.</p>
+</section>
+
+<section>
+<h2>Train and read the log</h2>
+<pre><code class="language-python">trainer = SFTTrainer(model=model, args=args,
+                     train_dataset=train,
+                     processing_class=tok)
+trainer.train()
+
+for log in trainer.state.log_history:
+    if "loss" in log:
+        print(log["step"], log["loss"],
+              log["mean_token_accuracy"])</code></pre>
+<p><code>loss</code> and <code>mean_token_accuracy</code> are computed on unmasked <em>training</em> tokens. They show fit, not generalisation. Colab’s progress table shows only the loss.</p>
+</section>
+
+<section>
+<h2>Check the mask</h2>
+<pre><code class="language-python">ex = trainer.train_dataset[0]   # keys: prompt, completion,
+                                #       input_ids, labels
+counted = [i for i, l in zip(ex["input_ids"], ex["labels"])
+           if l != -100]
+tok.decode(counted)   # only the completion</code></pre>
+<p>Prompt-completion rows get <code>labels</code> with every prompt position set to <code>-100</code>. Here 23 of 84 tokens count.</p>
+</section>
+
+<section>
+<h2>Score before and after</h2>
+<pre><code class="language-python">test_rows = make_rows(40, "test", seed=1)
+before = score(model, tok, test_rows)         # base model
+# ... build the trainer, trainer.train() ...
+after = score(trainer.model, tok, test_rows)  # fine-tuned</code></pre>
+<div class="table-wrap">
+<table>
+<thead><tr><th>SmolLM2-135M, 1 epoch</th><th>valid-JSON rate</th><th>field accuracy</th></tr></thead>
+<tbody>
+<tr><td>Before</td><td>0.025</td><td>0.025</td></tr>
+<tr><td>After (19 s on a laptop RTX 3050 Ti)</td><td>1.0</td><td>1.0</td></tr>
+</tbody>
+</table>
+</div>
+<p>Score <em>before</em> training: <code>trainer.train()</code> updates <code>model</code> in place.</p>
+</section>
+
+<section>
+<h2>Gotchas (TRL 1.15, Transformers v5)</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Old code</th><th>Now</th></tr></thead>
+<tbody>
+<tr><td><code>SFTConfig(max_seq_length=...)</code></td><td><code>max_length=...</code>. The old name raises <code>TypeError</code>.</td></tr>
+<tr><td><code>SFTTrainer(tokenizer=tok)</code></td><td><code>processing_class=tok</code>. The old name raises <code>TypeError</code>.</td></tr>
+<tr><td><code>SFTTrainer(model="id")</code></td><td>Loads <strong>float32</strong>, unlike <code>from_pretrained</code>’s checkpoint dtype. Set <code>model_init_kwargs={"dtype": ...}</code> to change it.</td></tr>
+<tr><td>Default <code>bf16</code></td><td><code>True</code> in <code>SFTConfig</code>. Pass <code>bf16=False</code> on a T4.</td></tr>
+<tr><td><code>setup_chat_format</code></td><td>Not exported by TRL 1.15. Instruct models already have a template.</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+</div>
+
+<p class="sidenote">Sources: <a href="https://huggingface.co/docs/trl/dataset_formats">TRL dataset formats</a> &middot; <a href="https://huggingface.co/docs/trl/sft_trainer">TRL SFT Trainer</a> &middot; <a href="https://huggingface.co/docs/datasets/process">Datasets: Process</a> &middot; <a href="https://huggingface.co/docs/transformers/chat_templating">Chat templates</a></p>
+
+</main>
+</body>
+</html>

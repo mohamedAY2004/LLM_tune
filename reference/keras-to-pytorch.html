@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keras to PyTorch</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; Lessons 1–10</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>Keras &harr; PyTorch &amp; Hugging Face</h1>
+<p class="lede">The Keras idea you already know, next to its PyTorch spelling. New rows get added as lessons introduce them.</p>
+
+<h2>Models &amp; preprocessing <span class="h-note">Lesson 1</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch + Hugging Face</th></tr></thead>
+<tbody>
+<tr><td>Pretrained network</td><td><code>keras.applications.ResNet50(weights="imagenet")</code></td><td><code>AutoModelForCausalLM.from_pretrained(model_id)</code></td></tr>
+<tr><td>Matching preprocessing</td><td><code>resnet50.preprocess_input(x)</code></td><td><code>AutoTokenizer.from_pretrained(model_id)</code> + <code>apply_chat_template</code></td></tr>
+<tr><td>Output head</td><td><code>Dense(1000, "softmax")</code> once per image</td><td><code>logits (batch, seq, vocab)</code>, a vocab-sized head at <em>every</em> position</td></tr>
+<tr><td>Inference</td><td><code>model.predict(x)</code></td><td><code>with torch.no_grad(): model(**inputs)</code></td></tr>
+<tr><td>Inference mode (dropout off)</td><td><code>model(x, training=False)</code></td><td><code>model.eval()</code> (<code>from_pretrained</code> does this for you)</td></tr>
+<tr><td>Numeric precision</td><td><code>mixed_precision.set_global_policy(...)</code></td><td><code>from_pretrained(..., dtype="auto")</code> / <code>torch.bfloat16</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Tensors &amp; devices <span class="h-note">Lesson 1</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch</th></tr></thead>
+<tbody>
+<tr><td>Tensor type</td><td><code>tf.Tensor</code></td><td><code>torch.Tensor</code></td></tr>
+<tr><td>GPU placement</td><td>Automatic</td><td>Explicit: <code>model.to(device)</code> <strong>and</strong> <code>inputs.to(device)</code></td></tr>
+<tr><td>Pick device</td><td>&mdash;</td><td><code>"cuda" if torch.cuda.is_available() else "cpu"</code></td></tr>
+<tr><td>Argmax</td><td><code>tf.argmax(x, -1)</code></td><td><code>x.argmax(-1)</code></td></tr>
+<tr><td>To Python / NumPy</td><td><code>x.numpy()</code></td><td><code>x.item()</code> (scalar) &middot; <code>x.cpu().numpy()</code></td></tr>
+<tr><td>Pass a dict of inputs</td><td><code>model(inputs_dict)</code></td><td><code>model(**inputs)</code> unpacks into keyword args</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Training <span class="h-note">Lessons 2–3</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch</th></tr></thead>
+<tbody>
+<tr><td>Training loop</td><td><code>model.fit(...)</code></td><td>An explicit <code>for</code> loop you write</td></tr>
+<tr><td>Training mode</td><td><code>model(x, training=True)</code></td><td><code>model.train()</code></td></tr>
+<tr><td>Weights to update</td><td><code>model.trainable_weights</code></td><td><code>model.parameters()</code></td></tr>
+<tr><td>Optimizer</td><td><code>keras.optimizers.AdamW(5e-5)</code></td><td><code>torch.optim.AdamW(model.parameters(), lr=5e-5)</code></td></tr>
+<tr><td>Compute gradients</td><td><code>tape.gradient(loss, weights)</code></td><td><code>loss.backward()</code> (fills each <code>p.grad</code>)</td></tr>
+<tr><td>Apply the update</td><td><code>optimizer.apply(grads, weights)</code></td><td><code>optimizer.step()</code></td></tr>
+<tr><td>Fresh gradients each step</td><td>New <code>GradientTape</code> per step</td><td><code>optimizer.zero_grad()</code>. PyTorch <em>adds</em> to old gradients otherwise.</td></tr>
+<tr><td>Loss argument order</td><td><code>loss_fn(y_true, y_pred)</code></td><td><code>F.cross_entropy(pred, target)</code></td></tr>
+<tr><td>Leave a target out of the loss</td><td><code>sample_weight=0</code></td><td>Label <code>-100</code> (the <code>ignore_index</code>)</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Data &amp; SFT <span class="h-note">Lessons 4–5</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch + Hugging Face</th></tr></thead>
+<tbody>
+<tr><td>Data table</td><td><code>tf.data.Dataset.from_tensor_slices(...)</code></td><td><code>datasets.Dataset.from_list(rows)</code>. <code>.map(fn)</code> returns a <em>new</em> dataset.</td></tr>
+<tr><td>Validation data</td><td><code>fit(validation_split=0.2)</code> (last 20% of the same data)</td><td>A separately built held-out set: <code>make_rows(n, "test")</code></td></tr>
+<tr><td>Training config</td><td><code>compile(optimizer=Adam(5e-5))</code> + <code>fit(epochs=1, batch_size=8)</code></td><td><code>SFTConfig(learning_rate=5e-5, num_train_epochs=1, per_device_train_batch_size=8)</code></td></tr>
+<tr><td>Start training</td><td><code>model.fit(...)</code></td><td><code>SFTTrainer(model=..., args=..., train_dataset=..., processing_class=tok).train()</code></td></tr>
+<tr><td>Loss function</td><td><code>compile(loss=...)</code></td><td>None to pass: the model computes cross-entropy from <code>labels</code></td></tr>
+<tr><td>Training history</td><td><code>history.history["loss"]</code></td><td><code>trainer.state.log_history</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>LoRA &amp; memory <span class="h-note">Lessons 6–7</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch + Hugging Face</th></tr></thead>
+<tbody>
+<tr><td>Freeze weights</td><td><code>base.trainable = False</code></td><td><code>p.requires_grad_(False)</code>. PEFT does this for you.</td></tr>
+<tr><td>Count trainable params</td><td><code>model.summary()</code></td><td><code>sum(p.numel() for p in model.parameters() if p.requires_grad)</code></td></tr>
+<tr><td>Gradient accumulation</td><td><code>keras.optimizers.Adam(gradient_accumulation_steps=4)</code></td><td><code>SFTConfig(gradient_accumulation_steps=4)</code></td></tr>
+<tr><td>Mixed precision</td><td><code>keras.config.set_dtype_policy("mixed_float16")</code></td><td><code>SFTConfig(fp16=True)</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Evaluate &amp; ship <span class="h-note">Lessons 8–9</span></h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Idea</th><th>Keras / TF</th><th>PyTorch + Hugging Face</th></tr></thead>
+<tbody>
+<tr><td>Evaluate on test data</td><td><code>model.evaluate(x_test, y_test)</code></td><td><code>score(model, tok, test_rows)</code>: generate, then check valid JSON and each field</td></tr>
+<tr><td>Save</td><td><code>model.save("m.keras")</code></td><td><code>model.save_pretrained(dir)</code> + <code>tok.save_pretrained(dir)</code></td></tr>
+<tr><td>Share and reload</td><td>Send the file</td><td><code>model.push_to_hub(repo_id)</code> &middot; <code>from_pretrained(repo_id)</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="sidenote">Sources: <a href="https://docs.pytorch.org/tutorials/beginner/basics/intro.html">PyTorch — Learn the Basics</a> &middot; <a href="https://docs.pytorch.org/docs/stable/generated/torch.no_grad.html"><code>torch.no_grad</code></a> &middot; <a href="https://keras.io/guides/writing_a_custom_training_loop_in_torch/">Keras: a training loop in PyTorch</a> &middot; <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html"><code>CrossEntropyLoss</code></a></p>
+
+</main>
+</body>
+</html>

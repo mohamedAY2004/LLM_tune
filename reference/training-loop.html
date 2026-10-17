@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Loop &amp; Labels</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body class="reference">
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Reference &middot; PyTorch 2.14 &middot; Transformers 5.19 &middot; verified 2026-10-15</span>
+</nav>
+
+<p class="kicker">Cheat sheet</p>
+<h1>Training loop &amp; labels</h1>
+<p class="lede">One PyTorch training step for a causal LM, and the labels that decide what it learns. Taught in <a href="../lessons/0002-one-training-step.html">Lesson 2</a> and <a href="../lessons/0003-labels-and-masking.html">Lesson 3</a>.</p>
+
+<div class="ref-grid">
+<section>
+<h2>The loop</h2>
+<pre><code class="language-python">optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+
+model.train()                        # training mode
+for step in range(num_steps):
+    out = model(**batch, labels=labels)
+    out.loss.backward()              # gradients -&gt; p.grad
+    optimizer.step()                 # update the weights
+    optimizer.zero_grad()            # clear p.grad
+
+model.eval()                         # before generating</code></pre>
+<p>Create the optimizer <strong>once</strong>, before the loop. AdamW keeps running averages for every parameter.</p>
+</section>
+
+<section>
+<h2>What each line replaces</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>PyTorch</th><th>Keras / TF</th></tr></thead>
+<tbody>
+<tr><td><code>model.train()</code></td><td><code>model(x, training=True)</code></td></tr>
+<tr><td><code>out = model(**batch, labels=...)</code></td><td>forward + <code>loss_fn(y, preds)</code></td></tr>
+<tr><td><code>out.loss.backward()</code></td><td><code>tape.gradient(loss, weights)</code></td></tr>
+<tr><td><code>optimizer.step()</code></td><td><code>optimizer.apply(grads, weights)</code></td></tr>
+<tr><td><code>optimizer.zero_grad()</code></td><td>a new <code>GradientTape</code> each step</td></tr>
+<tr><td>the <code>for</code> loop</td><td><code>model.fit(x, y, epochs=...)</code></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Causal-LM labels</h2>
+<pre><code class="language-python">batch = tok.apply_chat_template(
+    messages_with_answer,             # user + assistant turns
+    return_tensors="pt", return_dict=True).to(device)
+
+out = model(**batch, labels=batch["input_ids"])
+out.loss                              # mean cross-entropy
+
+# the same number, by hand (the model shifts internally):
+F.cross_entropy(out.logits[0, :-1], batch["input_ids"][0, 1:])</code></pre>
+<p>Don’t shift the labels yourself. Position <em>t</em> is scored against token <em>t</em>+1 inside the model. No <code>labels</code> → <code>out.loss</code> is <code>None</code>.</p>
+</section>
+
+<section>
+<h2>Mask the prompt (loss on the answer only)</h2>
+<pre><code class="language-python">full = tok.apply_chat_template(
+    row["prompt"] + row["completion"],
+    return_tensors="pt", return_dict=True)
+prompt_len = tok.apply_chat_template(
+    row["prompt"], add_generation_prompt=True,
+    return_tensors="pt", return_dict=True)["input_ids"].shape[1]
+
+labels = full["input_ids"].clone()    # copy!
+labels[:, :prompt_len] = -100         # ignored by the loss
+loss = model(**full, labels=labels).loss</code></pre>
+<p><code>-100</code> is cross-entropy’s default <code>ignore_index</code>. Pad positions get <code>-100</code> too; data collators do it. TRL’s <code>SFTTrainer</code> builds these same labels for prompt-completion data.</p>
+</section>
+
+<section>
+<h2>Modes and gradients</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Call</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>model.train()</code></td><td>Dropout etc. on. Use before training.</td></tr>
+<tr><td><code>model.eval()</code></td><td>Dropout etc. off. <code>from_pretrained</code> returns this mode. Does <strong>not</strong> stop gradients.</td></tr>
+<tr><td><code>with torch.no_grad():</code></td><td>No gradient tracking, less memory. Use for generation and evaluation.</td></tr>
+<tr><td><code>model.training</code></td><td><code>True</code> in train mode. Handy to check.</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Shapes</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Tensor</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td><code>input_ids</code>, <code>attention_mask</code>, <code>labels</code></td><td><code>(batch, seq)</code></td></tr>
+<tr><td><code>out.logits</code></td><td><code>(batch, seq, vocab)</code></td></tr>
+<tr><td><code>out.loss</code></td><td><code>()</code>, a scalar with a <code>grad_fn</code></td></tr>
+<tr><td><code>p.grad</code></td><td>same shape as parameter <code>p</code>; <code>None</code> after <code>zero_grad()</code></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section>
+<h2>Common mistakes</h2>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Symptom</th><th>Cause → fix</th></tr></thead>
+<tbody>
+<tr><td><code>out.loss</code> is <code>None</code></td><td>No <code>labels</code> passed → <code>model(**batch, labels=...)</code></td></tr>
+<tr><td><code>ValueError: Expected input batch_size … to match target batch_size …</code></td><td>You shifted the labels yourself → pass them unshifted</td></tr>
+<tr><td><code>RuntimeError: element 0 of tensors does not require grad…</code></td><td>Forward ran under <code>torch.no_grad()</code> → train without it</td></tr>
+<tr><td><code>IndexError: index out of range in self</code> after masking</td><td><code>labels = input_ids</code> wrote -100 into the inputs → <code>.clone()</code></td></tr>
+<tr><td>Loss falls slower and less smoothly</td><td>No <code>zero_grad()</code>: gradients pile up → clear them every step</td></tr>
+<tr><td>Loss is large and mostly about the prompt</td><td>Prompt not masked → set prompt labels to <code>-100</code></td></tr>
+</tbody>
+</table>
+</div>
+</section>
+</div>
+
+<p class="sidenote">Sources: <a href="https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html">PyTorch: Optimizing Model Parameters</a> &middot; <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html"><code>CrossEntropyLoss</code></a> &middot; <a href="https://docs.pytorch.org/docs/stable/notes/autograd.html#evaluation-mode-nn-module-eval">Autograd notes: eval mode</a> &middot; <a href="https://keras.io/guides/writing_a_custom_training_loop_in_torch/">Keras: training loop in PyTorch</a> &middot; <a href="https://huggingface.co/docs/trl/sft_trainer">TRL SFT Trainer</a></p>
+
+</main>
+</body>
+</html>

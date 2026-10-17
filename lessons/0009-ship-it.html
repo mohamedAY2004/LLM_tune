@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ship It</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 9 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 9 &middot; about 25 minutes</p>
+<h1>Ship it: your model on the Hub</h1>
+<p class="lede">Merge the adapter, push the model with an honest model card, and let anyone load it by name.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>Your fine-tuned extractor goes on the Hugging Face Hub with a model card, and anyone can load it in three lines. You’ll also prove that merging and saving didn’t change the scores.</p>
+</div>
+
+<h2>From a Colab session to a public model</h2>
+
+<p>In Keras you’d save one <code>.keras</code> file. A Hugging Face checkpoint is a folder: config, weights, tokenizer files and a <code>README.md</code>. The Hub stores that folder as a git repo with a name like <code>you/smollm2-360m-json-extractor</code>.</p>
+
+<div class="compare">
+  <div class="keras-side">
+    <p class="label keras">Keras</p>
+<pre><code class="language-python">model.save("extractor.keras")
+model = keras.models.load_model(
+    "extractor.keras")</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">Hugging Face</p>
+<pre><code class="language-python">model.save_pretrained("folder")
+model.push_to_hub("you/extractor")
+model = AutoModelForCausalLM \
+    .from_pretrained("you/extractor")</code></pre>
+  </div>
+</div>
+
+<h3>1 · Adapter or merged model?</h3>
+
+<p>Lesson 6 saved only the LoRA adapter. To use it, you load the base model and attach the adapter. <code>merge_and_unload()</code> adds each adapter product <code>B·A</code> into the frozen weight it belongs to, then returns a <strong>plain Transformers model</strong> with no adapter left:</p>
+
+<pre><code class="language-python">from peft import PeftModel
+base = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.float32)
+merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()</code></pre>
+
+<p>When I ran the notebook, both versions scored 1.00 / 1.00 on the 40 held-out rows. Here’s what differed:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Adapter</th><th>Merged model</th></tr></thead>
+  <tbody>
+    <tr><td>File size (fp32)</td><td>17 MB</td><td>1,447 MB</td></tr>
+    <tr><td>To load it you need</td><td>the base model + PEFT</td><td>Transformers only</td></tr>
+    <tr><td>Scoring 40 rows on my GPU</td><td>54 s</td><td>28 s</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><span class="sidenote">The PEFT docs say an unmerged adapter adds “inference latency”, and recommend <code>merge_and_unload()</code> to remove it (<a href="https://huggingface.co/docs/peft/package_reference/lora">LoRA reference</a>). I got the same 2× gap with a freshly loaded adapter, so it isn’t a leftover from training.</span>
+Ship the <strong>merged model</strong> when anyone should be able to use it with plain Transformers. Ship the <strong>adapter</strong> when size matters, or when you serve many tasks on one base model. Either way, <mark>re-score after merging</mark>. The notebook checks that the reloaded model’s scores match the adapter’s exactly.</p>
+
+<h3>2 · Push: account, token, one call per object</h3>
+
+<p>You need a free Hugging Face account and an <strong>access token</strong> (a password for programs, not a text token) with the <em>Write</em> role. A <em>Read</em> token can download but can’t push.</p>
+
+<p><span class="sidenote">The huggingface_hub quick start: “Define a <code>HF_TOKEN</code> secret to be automatically authenticated!” (<a href="https://huggingface.co/docs/huggingface_hub/quick-start">quick start</a>). Token roles are explained in <a href="https://huggingface.co/docs/hub/security-tokens">User access tokens</a>.</span>
+In Colab, store the token as a secret called <code>HF_TOKEN</code> (key icon in the sidebar) and switch on notebook access. <code>huggingface_hub</code> finds it automatically, so the token never appears in your notebook. Then:</p>
+
+<pre><code class="language-python">shipped.push_to_hub(repo_id)   # creates the repo if needed, uploads weights + config
+tok.push_to_hub(repo_id)       # tokenizer files, including the chat template
+card.push_to_hub(repo_id)      # README.md, last (see below)</code></pre>
+
+<p>Push the tokenizer too. The chat template lives in it, and without the template nobody can format prompts the way you trained (Lesson 1).</p>
+
+<h3>3 · The model card</h3>
+
+<p>The card is the repo’s <code>README.md</code>, and it’s the first thing a user or interviewer reads. It has two parts. A YAML block at the top holds machine-readable metadata. <code>base_model</code> links your model to its parent on the Hub. Below it is plain Markdown for people:</p>
+
+<ul>
+  <li><strong>What it does</strong>, plus a three-line usage example.</li>
+  <li><strong>Training data</strong>: what it is and how many rows.</li>
+  <li><strong>Evaluation</strong>: your before/after table, with the real numbers from Lesson 8’s method.</li>
+  <li><strong>Intended use</strong> and <strong>limitations</strong>: your failure tags in plain words.</li>
+</ul>
+
+<p><span class="sidenote"><code>base_model</code> metadata “will be used to display the base model on the model page” and lets users find models derived from it (<a href="https://huggingface.co/docs/hub/model-cards#specifying-a-base-model">Hub docs</a>).</span>
+The notebook builds the card as an f-string, so the numbers come straight from your variables, and wraps it in <code>huggingface_hub.ModelCard</code>. Two traps. Don’t indent the <code>---</code> lines, or the metadata is silently dropped. And push the card <em>last</em>: <code>push_to_hub</code> on a model writes its own <code>README.md</code> when the repo has none.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Create a free account and a <em>Write</em> token, then add it as the Colab secret <code>HF_TOKEN</code>. The notebook’s first cell shows where.</li>
+  <li>Download <a href="../exercises/0009-ship-it.ipynb" download><code>0009-ship-it.ipynb</code></a>, then in <a href="https://colab.research.google.com/">Colab</a> use <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>.</li>
+  <li>Fill in the four <code># TODO</code>s: merge, save, write the card’s limitations, push. Each has a check cell. Without a token, the push check stays ❌, which is honest.</li>
+  <li>Run the final cell. It loads your model by repo id, in three lines.</li>
+</ol>
+
+<p>When I tested the notebook on a laptop GPU (RTX 3050 Ti) without a token, it ran in about 3 minutes, with a 2.9 GB memory peak. The base model went from 0.55 / 0.55 to 1.00 / 1.00, and the last cell replied <code>{"name": "Kwame", "age": 34, "city": "Kumasi"}</code>. I didn’t run the push itself: it needs your account.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. What does <code>PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()</code> return?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The adapter products are added into the weights, and you get back an ordinary model class, `LlamaForCausalLM` here.">A plain Transformers model, no adapter</li>
+    <li data-why="That’s what `save_pretrained` on the PEFT model writes. Merging folds A and B into the full weights.">Just the adapter’s two small matrices</li>
+    <li data-why="“Unload” means the adapter modules are removed. Nothing is left attached.">A PeftModel with adapters still attached</li>
+    <li data-why="Merging doesn’t change precision. The weights keep the dtype you loaded.">A quantized copy of the model</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. <code>push_to_hub</code> fails with a permission error. Which credential does pushing need?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Pushing creates or changes a repo, which needs the Write role (or a fine-grained token with write access to that repo).">A token with the Write role</li>
+    <li data-why="A Read token can download, but it can’t create or update repos.">A token with the Read role</li>
+    <li data-why="Anyone can download a public repo, but only an authenticated owner can push to it.">No token, public repos are open</li>
+    <li data-why="The Hub API uses access tokens. Your password only logs you into the website.">Your Hugging Face account login password</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. What does <code>base_model:</code> in the model card’s YAML block do?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The Hub shows the parent on your model page and lets people find models derived from it.">Links your model to its parent</li>
+    <li data-why="A merged model is standalone. Loading it never fetches the base model.">Downloads the base weights at load</li>
+    <li data-why="Merging happens in your notebook, with `merge_and_unload()`. The Hub doesn’t merge anything.">Merges the adapter on the Hub</li>
+    <li data-why="That’s the `license:` field.">Sets the license for your model</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 6): after <code>SFTTrainer(..., peft_config=LoraConfig(r=8, target_modules="all-linear"))</code>, which parameters have <code>requires_grad=True</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The base weights are frozen. Only the small A and B matrices train, about 1% of the parameters.">Only the small LoRA adapter matrices</li>
+    <li data-why="That would be a full fine-tune, as in Lesson 5. LoRA freezes the base.">Every weight in the base model</li>
+    <li data-why="LoRA doesn’t train the embeddings or the output head by default.">Only the embedding and output layers</li>
+    <li data-why="With `target_modules=&quot;all-linear&quot;`, adapters go on the MLP layers too, and the original attention weights stay frozen.">Attention layers only, MLPs stay frozen</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>base</code>, <code>adapter_dir</code>, <code>out_dir</code>, <code>repo_id</code> and <code>card_text</code> are ready. The repo doesn’t exist yet. Put the lines in order to ship exactly the model you saved, with your card as its README. Leave the tokenizer out of this exercise. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>merged = PeftModel.from_pretrained(base, adapter_dir).merge_and_unload()</li>
+    <li>merged.save_pretrained(out_dir)</li>
+    <li>shipped = AutoModelForCausalLM.from_pretrained(out_dir)</li>
+    <li>shipped.push_to_hub(repo_id)</li>
+    <li>ModelCard(card_text).push_to_hub(repo_id)</li>
+    <li data-distractor>merged = base.merge_and_unload()</li>
+    <li data-distractor>merged = PeftModel.from_pretrained(base, adapter_dir)</li>
+  </ol>
+  <div class="parsons-explain"><p><code>base</code> is a plain model with no adapter attached, so it has no <code>merge_and_unload()</code> method. Attach the adapter first with <code>PeftModel.from_pretrained</code>. But that line alone gives you base + adapter, not a merged model: pushing it would upload only the adapter. The card goes last: <code>ModelCard.push_to_hub</code> can’t create a repo, and a model push into an empty repo writes an automatic README.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: an interviewer asks, “You fine-tuned with LoRA. Do you ship the adapter or a merged model?” Answer in three or four sentences.</p>
+  <div class="recall-a">
+    <p>It depends on the users. A merged model (<code>merge_and_unload()</code>) is standalone: it loads with plain Transformers or <code>pipeline</code>, and has no adapter overhead at inference, but it’s full size (1.4 GB in fp32 for a 360M model). An adapter is tiny (17 MB here) and lets you swap many tasks on one base, but users need the base model and PEFT. Either way, I re-score after merging to prove nothing changed, and publish the card with base model, data, before/after metrics and limitations.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/transformers/model_sharing">Transformers docs: “Share”</a>, covering <code>push_to_hub</code>, tokens and repos. Secondary: <a href="https://huggingface.co/docs/huggingface_hub/guides/model-cards">huggingface_hub: “Create and share Model Cards”</a>, for the <code>ModelCard</code> API and its metadata.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0008-evaluating-an-extractor.html">&larr; Lesson 8</a>
+  <span><a href="../reference/eval-and-ship.html">Cheat sheet: evaluate &amp; ship</a> &middot; <a href="../reference/lora-qlora.html">Cheat sheet: LoRA &amp; QLoRA</a></span>
+  <a href="0010-capstone.html">Next: Lesson 10 — capstone &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

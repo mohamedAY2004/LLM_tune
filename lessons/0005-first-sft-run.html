@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your First SFT Run</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 5 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 5 &middot; about 25 minutes</p>
+<h1>Your first SFT run</h1>
+<p class="lede">Hand your dataset to TRL’s <code>SFTTrainer</code>, fine-tune every weight of a small chat model, and watch the held-out score jump.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll fully fine-tune <code>SmolLM2-135M-Instruct</code> on your 500 training rows, then score it on the 40 held-out rows. When I ran it on a laptop GPU, the valid-JSON rate went from 0.025 to 1.0 after 19 seconds of training.</p>
+</div>
+
+<h2>Supervised fine-tuning with TRL</h2>
+
+<h3>1 · <code>SFTTrainer</code> is Lessons 2 and 3, automated</h3>
+
+<p>Supervised fine-tuning (SFT) means training on input–output pairs you wrote: here, a message and its ideal JSON. You already know every step; <code>SFTTrainer</code> runs them for you (<a href="https://huggingface.co/docs/trl/sft_trainer">TRL SFT docs</a>):</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Step (where you met it)</th><th>Where <code>SFTTrainer</code> does it</th></tr></thead>
+  <tbody>
+    <tr><td>Render the chat with <code>apply_chat_template</code> (Lessons 1, 4)</td><td>When you build the trainer, for every row</td></tr>
+    <tr><td>Mask prompt tokens with <code>-100</code> (Lesson 3)</td><td>The <code>labels</code> column it builds for prompt-completion rows</td></tr>
+    <tr><td>Pad a batch; pad labels with <code>-100</code> (Lesson 3)</td><td>Its data collator: the function that builds each batch</td></tr>
+    <tr><td>Forward, <code>loss.backward()</code>, <code>optimizer.step()</code>, <code>zero_grad()</code> (Lesson 2)</td><td><code>trainer.train()</code>, with AdamW and a linearly decaying learning rate by default</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>You’ll check the mask in the notebook. For the first row, the tokens whose label isn’t <code>-100</code> decoded to exactly the completion, <code>{"name": "Kenji", "age": 66, "city": "Oslo"}&lt;|im_end|&gt;</code> plus a newline.</p>
+
+<h3>2 · The <code>SFTConfig</code> arguments that matter</h3>
+
+<p><code>SFTConfig</code> holds the training settings, like the arguments to Keras <code>compile</code> and <code>fit</code>:</p>
+
+<div class="compare wide">
+  <div class="keras-side">
+    <p class="label keras">Keras</p>
+<pre><code class="language-python">model.compile(
+    optimizer=keras.optimizers.AdamW(5e-5),
+    loss="sparse_categorical_crossentropy")
+
+model.fit(x, y,
+          epochs=1,
+          batch_size=8)</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">TRL</p>
+<pre><code class="language-python">args = SFTConfig(
+    output_dir="sft-smollm2-135m",
+    learning_rate=5e-5,
+    num_train_epochs=1,
+    per_device_train_batch_size=8,
+    max_length=256, bf16=False,
+    logging_steps=10, save_strategy="no",
+    report_to="none")
+trainer = SFTTrainer(model=model, args=args,
+    train_dataset=train, processing_class=tok)
+trainer.train()
+# no loss argument: the model computes
+# cross-entropy from the labels</code></pre>
+  </div>
+</div>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Argument</th><th>Why this value</th></tr></thead>
+  <tbody>
+    <tr><td><code>learning_rate=5e-5</code></td><td>Default 2e-5. 5e-5 learned this task in one epoch.</td></tr>
+    <tr><td><code>num_train_epochs=1</code></td><td>The default is 3. One pass (63 steps) was enough.</td></tr>
+    <tr><td><code>per_device_train_batch_size=8</code></td><td>Keras’s <code>batch_size</code>: rows per step on each GPU.</td></tr>
+    <tr><td><code>max_length=256</code></td><td>The longest row is 91 tokens (Lesson 4). Nothing gets cut.</td></tr>
+    <tr><td><code>bf16=False</code></td><td>On by default, but the T4 has no native bf16. We train in fp32.</td></tr>
+    <tr><td><code>logging_steps=10</code>, <code>save_strategy="no"</code>, <code>report_to="none"</code></td><td>Log every 10 steps; save no checkpoints; use no external tracker.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Old tutorials use two retired names: <code>max_seq_length</code> (now <code>max_length</code>) and <code>tokenizer=</code> (now <code>processing_class=</code>). On TRL 1.15, both raise a <code>TypeError</code>; I checked.</p>
+
+<h3>3 · Read the log, then trust the test set</h3>
+
+<p>Here is my run, printed from <code>trainer.state.log_history</code>:</p>
+
+<pre><code class="nohighlight">step  10 | loss 0.04627 | mean_token_accuracy 0.990
+step  20 | loss 0.00085 | mean_token_accuracy 1.000
+step  30 | loss 0.00028 | mean_token_accuracy 1.000
+step  40 | loss 0.00018 | mean_token_accuracy 1.000
+step  50 | loss 0.00016 | mean_token_accuracy 1.000
+step  60 | loss 0.00014 | mean_token_accuracy 1.000</code></pre>
+
+<p><span class="sidenote">Colab’s progress table shows only the training loss. The notebook prints the other metrics from <code>trainer.state.log_history</code>.</span>
+<code>loss</code> is the cross-entropy on the unmasked (completion) tokens, averaged over each 10-step window. <code>mean_token_accuracy</code> is the share of those tokens whose top prediction was right (<a href="https://huggingface.co/docs/trl/sft_trainer#logged-metrics">logged metrics</a>). Both come from <em>training</em> rows, so they show fit, not generalisation.</p>
+
+<p>That’s the job of <code>score</code> on the 40 held-out rows:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>valid-JSON rate</th><th>field accuracy</th><th>a typical reply</th></tr></thead>
+  <tbody>
+    <tr><td>Base model</td><td>0.025</td><td>0.025</td><td><code>JSON:\n{\n  "name": "Amara", ...</code></td></tr>
+    <tr><td>Fine-tuned</td><td><strong>1.0</strong></td><td><strong>1.0</strong></td><td><code>{"name": "Amara", "age": 54, "city": "Hanoi"}</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A field only counts when the reply parses as JSON, so the base model scores low on both despite finding the right content. SFT taught it the format, and to stop. This task is easy, so a perfect score comes fast; Lesson 8 hunts for inputs that still break it.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0005-first-sft-run.ipynb" download><code>0005-first-sft-run.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>. You need the GPU today.</li>
+  <li>Fill in the four <code># TODO</code>s. Each has a check cell that prints ✅ or a hint.</li>
+  <li>Compare the before and after scores, then try your own sentence in the last TODO.</li>
+</ol>
+
+<p>When I tested the notebook on a laptop GPU (RTX 3050 Ti, bf16 off), training took 19 seconds, peak GPU memory was 2.38 GB, and everything after the install ran in about 95 seconds. My own sentence, “Quick intro: Zainab, 31 years old, currently living in Marrakesh.”, came back as valid JSON with all three fields right.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. After 20 steps the loss is 0.00085 and <code>mean_token_accuracy</code> is 1.0. What does that tell you?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Both numbers are computed on training batches. They show the fit, not generalisation. The held-out score answers that.">The model fits its training rows well</li>
+    <li data-why="Training metrics never see unseen inputs. Only the held-out test set can tell you that.">It will be perfect on new text</li>
+    <li data-why="A too-high learning rate usually shows as a loss that jumps or diverges. A smooth fall on an easy task is normal.">The learning rate is far too high</li>
+    <li data-why="The loss covers the completion only; you decoded exactly those tokens in TODO 3.">The prompt tokens were not masked out</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. Why does the notebook pass <code>bf16=False</code> to <code>SFTConfig</code> on a Colab T4?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="bf16 arrived with NVIDIA’s Ampere GPUs, and the T4 is older. `SFTConfig` turns bf16 on by default, so you switch it off.">The T4 has no native bf16 support</li>
+    <li data-why="Full fine-tuning works in mixed precision on many GPUs. We use fp32 because the T4 lacks bf16 and the model is tiny.">The T4 needs fp32 for full fine-tuning</li>
+    <li data-why="Precision changes the numbers inside the network, not how text is tokenized.">On a T4, bf16 breaks chat templates</li>
+    <li data-why="Loss masking comes from the dataset shape, not from the precision setting.">On a T4, bf16 disables completion-only loss</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. Which <code>SFTConfig</code> argument plays the role of Keras <code>fit(batch_size=8)</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Rows per optimizer step on each GPU. With one GPU it’s exactly Keras’s `batch_size`."><code>per_device_train_batch_size</code></li>
+    <li data-why="That sums gradients over several small batches before one update. It helps when memory is tight."><code>gradient_accumulation_steps</code></li>
+    <li data-why="That sets the batch size for evaluation. This run has no evaluation set."><code>per_device_eval_batch_size</code></li>
+    <li data-why="That sets how many CPU processes load data, not how many rows go in a batch."><code>dataloader_num_workers</code></li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 4): you run <code>train.map(add_length)</code> but don’t assign the result. What does <code>train</code> hold now?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="`map` returns a new dataset and leaves `train` unchanged. Write `train = train.map(add_length)` to keep the column.">The original rows, with no n_tokens column</li>
+    <li data-why="That’s the dataset `map` returned, and you threw it away. `map` never changes `train` in place.">The original rows plus an n_tokens column</li>
+    <li data-why="`map` adds the returned keys as new columns and keeps the old ones. Here the result was discarded anyway.">Only the n_tokens column, with nothing else</li>
+    <li data-why="`map` never empties or consumes a dataset. It returns a new one and leaves `train` as it was.">An empty dataset, because map consumed it</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>model</code>, <code>tok</code>, <code>args</code> and <code>test_rows</code> are ready. Put the lines in order to fine-tune and score. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>rows = make_rows(500, "train", seed=0)</li>
+    <li>train = Dataset.from_list(rows)</li>
+    <li>trainer = SFTTrainer(model=model, args=args, train_dataset=train, processing_class=tok)</li>
+    <li>trainer.train()</li>
+    <li>after = score(trainer.model, tok, test_rows)</li>
+    <li data-distractor>trainer = SFTTrainer(model=model, args=args, train_dataset=train, tokenizer=tok)</li>
+    <li data-distractor>args = SFTConfig(output_dir="out", max_seq_length=256)</li>
+  </ol>
+  <div class="parsons-explain"><p>Both distractors use names from older tutorials. In TRL 1.15, <code>tokenizer=</code> is now <code>processing_class=</code>, and <code>max_seq_length</code> is now <code>max_length</code>. Each old name raises a <code>TypeError</code>. Besides, <code>args</code> was already ready.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: an interviewer asks, “You give <code>SFTTrainer</code> a prompt-completion row. What happens to it before the optimizer step?” Answer in three or four sentences.</p>
+  <div class="recall-a">
+    <p>The trainer renders prompt plus completion through the tokenizer’s chat template and tokenizes it. It also tokenizes the prompt alone to find where the completion starts, and builds <code>labels</code> as a copy of the input ids with every prompt position set to <code>-100</code>. The collator pads the batch, padding labels with <code>-100</code> too. Then it’s the Lesson 2 loop: a forward pass gives the cross-entropy over the completion tokens only, then backward, an AdamW step, and zeroed gradients.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://huggingface.co/docs/trl/sft_trainer">TRL: SFT Trainer</a>. Read “Expected dataset type and format”, “Train on completion only” and “Logged metrics”. For a gentler walkthrough, see <a href="https://huggingface.co/learn/llm-course/chapter11/3">Hugging Face LLM Course 11.3</a>. Read it for the ideas only: some of its code predates TRL 1.15.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0004-a-dataset-for-chat.html">&larr; Lesson 4</a>
+  <span><a href="../reference/sft-cheatsheet.html">Cheat sheet: SFT</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0006-lora.html">Next: Lesson 6 — LoRA &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>

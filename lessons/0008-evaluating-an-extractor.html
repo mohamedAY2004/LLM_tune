@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluating an Extractor</title>
+<link rel="stylesheet" href="../assets/course.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js" defer></script>
+<script src="../assets/widgets.js" defer></script>
+</head>
+<body>
+<main>
+
+<nav class="course-nav top">
+  <a href="../index.html">&larr; Course home</a>
+  <span class="muted">Lesson 8 of the fine-tuning track</span>
+</nav>
+
+<p class="kicker">Lesson 8 &middot; about 25 minutes</p>
+<h1>Evaluating an extractor</h1>
+<p class="lede">A perfect test score is where evaluation starts, not where it ends.</p>
+
+<div class="callout win">
+  <p class="callout-title">Your win today</p>
+  <p>You’ll build an honest before/after table on held-out rows. Then you’ll write your own stress tests, find where the fine-tuned model breaks, and give each failure a name. That list of failures becomes the to-do list for your capstone.</p>
+</div>
+
+<h2>Three kinds of evidence</h2>
+
+<h3>1 · Training rows vs held-out rows</h3>
+
+<p>As in Keras, training accuracy and <code>evaluate()</code> on test data answer different questions. Here both come from <code>score()</code>, run on different rows.</p>
+
+<div class="compare">
+  <div class="keras-side">
+    <p class="label keras">Keras</p>
+<pre><code class="language-python">history = model.fit(x_train, y_train)
+history.history["accuracy"][-1]  # seen rows
+model.evaluate(x_test, y_test)   # unseen rows</code></pre>
+  </div>
+  <div class="torch-side">
+    <p class="label torch">This course</p>
+<pre><code class="language-python">score(tuned, tok, train_sample)  # seen rows
+score(tuned, tok, test_rows)     # held-out rows
+</code></pre>
+  </div>
+</div>
+
+<p>When I ran the notebook, the table came out like this (valid-JSON rate / field accuracy):</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Model</th><th>40 training rows</th><th>40 held-out test rows</th></tr></thead>
+  <tbody>
+    <tr><td>Base <code>SmolLM2-135M-Instruct</code></td><td>0.575 / 0.567</td><td>0.025 / 0.025</td></tr>
+    <tr><td>Fine-tuned (Lesson 5 recipe)</td><td>1.00 / 1.00</td><td>1.00 / 1.00</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>A score on training rows tells you the model learned what you showed it. It can’t tell you whether it generalizes: a model that memorized the rows would also score 1.00. The <strong>held-out test set</strong> uses names, cities and phrasings the model never saw. A 1.00 there means the model generalizes, but only to messages from the same generator.</p>
+
+<p><span class="sidenote">Forty rows is a small test set: one row is 2.5 points. The Hugging Face evaluation guidebook calls 100 samples “usually a minimum” for automatic benchmarks (<a href="https://github.com/huggingface/evaluation-guidebook/blob/main/contents/automated-benchmarks/designing-your-automatic-evaluation.md">source</a>).</span>
+Look at the base row too. It never trained, yet it scored 0.575 on one set and 0.025 on the other. The two sets just aren’t equally hard. So a before/after comparison is honest only when both models are scored on <mark>the same rows</mark>.</p>
+
+<h3>2 · Two metrics, greedy decoding</h3>
+
+<p>The <strong>valid-JSON rate</strong> measures format: does <code>json.loads</code> accept the reply? <strong>Field accuracy</strong> measures content: what share of <code>name</code>, <code>age</code> and <code>city</code> values match exactly? They catch different failures. The base model in Lesson 1 had the right content in the wrong format. Below you’ll see the opposite: perfect format, wrong content, which only field accuracy catches. A reply that doesn’t parse scores zero fields, so field accuracy can never beat the valid-JSON rate. Report both.</p>
+
+<p><span class="sidenote">Greedy search “selects the next most likely token at each step” and is the default when nothing else is configured (<a href="https://huggingface.co/docs/transformers/generation_strategies">generation strategies</a>).</span>
+<code>score()</code> uses greedy decoding (<code>do_sample=False</code>). The same input always gives the same reply, so if the score changes, the model changed. With sampling, two runs of the same model could score differently.</p>
+
+<h3>3 · Error analysis: stress tests and failure tags</h3>
+
+<p>Real messages don’t come from your generator. A <strong>stress test</strong> is a message you write on purpose to break the pattern, together with the JSON you expect. I wrote 17. The fine-tuned model passed 9: it handled an age in words (“thirty-two”), a French sentence, chit-chat around the facts, and “Ignore all previous instructions”. It failed 8, and <em>every</em> failing reply was valid JSON. Some of them:</p>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Message</th><th>Wrong part of the reply</th><th>Tag</th></tr></thead>
+  <tbody>
+    <tr><td>I’m Leo, 29.</td><td><code>"city": "New York"</code></td><td><code>invented</code></td></tr>
+    <tr><td>Just moved to Perth, I’m 30.</td><td><code>"name": "John"</code></td><td><code>invented</code></td></tr>
+    <tr><td>Leo from Perth has 3 kids and is 41.</td><td><code>"age": 3</code></td><td><code>wrong_value</code></td></tr>
+    <tr><td>Meet Kofi, 51, from Rio de Janeiro.</td><td><code>"city": "Rio"</code></td><td><code>wrong_value</code></td></tr>
+    <tr><td>Hana Tanaka, 61, São Paulo</td><td><code>"name": "Hana"</code></td><td><code>wrong_value</code></td></tr>
+    <tr><td>Ines, born in 1990, lives in Quito.</td><td><code>"age": 19</code></td><td><code>out_of_scope</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Each tag names a cause, and the cause points to a fix:</p>
+<ul>
+  <li><code>format</code>: not valid JSON. Add cleaner examples of the output.</li>
+  <li><code>invented</code>: the value isn’t in the message, so the model made one up. Every training message contained all three fields, so the model never learned to say <code>null</code>. Add rows with missing fields.</li>
+  <li><code>wrong_value</code>: the value is there, but the model copied the wrong thing or only part of it. Every training name and city was one word. Add rows with that pattern.</li>
+  <li><code>out_of_scope</code>: the schema has no right answer. Decide a rule, then put it in the prompt and the model card.</li>
+</ul>
+
+<p><mark>Only count failures you actually observed.</mark> I expected the age in words and the French sentence to break the model. Neither did.</p>
+
+<h2>Do it: the exercise notebook</h2>
+
+<ol class="steps">
+  <li>Download <a href="../exercises/0008-evaluating-an-extractor.ipynb" download><code>0008-evaluating-an-extractor.ipynb</code></a>.</li>
+  <li>Go to <a href="https://colab.research.google.com/">colab.research.google.com</a>, then <em>File → Upload notebook</em>.</li>
+  <li><em>Runtime → Change runtime type → T4 GPU</em>.</li>
+  <li>Fill in the four <code># TODO</code>s: score the base model, score the fine-tuned model, write at least 5 stress tests, tag each failure. Each TODO has a check cell.</li>
+  <li>Run the final cell. Note which tag is most common. That’s your first capstone fix.</li>
+</ol>
+
+<p>When I tested the notebook on a laptop GPU (RTX 3050 Ti), all cells ran in about 160 seconds, not counting installs and downloads. Training took 19 seconds and peak GPU memory was 2.4 GB. The fine-tuned model scored 1.00 on both sets of rows. With the two given stress tests plus five of mine, 5 of 7 failed, all with valid JSON.</p>
+
+<h2>Practice</h2>
+<div class="scoreboard"></div>
+
+<div class="quiz">
+  <p class="quiz-q">1. Your fine-tuned model scores 1.0 on 40 of its own training rows. What does that number tell you on its own?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Right. A model that memorized those rows would get the same score, so it says nothing about unseen rows.">It learned the rows it saw</li>
+    <li data-why="Training rows come from your generator. Real messages don’t, which is what stress tests are for.">It will handle real user messages</li>
+    <li data-why="Memorization also scores 1.0 on training rows. Only the held-out rows can show generalization.">Its held-out score is also high</li>
+    <li data-why="This number was measured on training rows, so it says nothing about how hard the test set is.">The test set is too easy</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">2. For the message “I’m Leo, 29.” the model replies <code>{"name": "Leo", "age": 29, "city": "New York"}</code>. Which tag fits?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="The message has no city, so the right answer is null. The model made one up, likely because every training message had a city.">Invented: no city in the message</li>
+    <li data-why="There was no city in the message to copy wrongly. The model produced one from nowhere.">Wrong value: copied the wrong city</li>
+    <li data-why="The reply parses fine with `json.loads`. The problem is the content.">Format: the reply isn’t valid JSON</li>
+    <li data-why="There is a clear right answer here: null. Out of scope is for inputs the schema can’t express, such as a birth year.">Out of scope: no rule applies</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">3. Why does <code>score()</code> generate with <code>do_sample=False</code>?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="Greedy decoding is deterministic, so a score change means the model changed, not the random draw.">Same input always gives same reply</li>
+    <li data-why="Sampled replies can be valid JSON too. The issue is that they vary from run to run.">Sampling cannot produce valid JSON output</li>
+    <li data-why="Decoding doesn’t change the weights. Greedy picks the most likely token at each step.">Greedy decoding makes the model smarter</li>
+    <li data-why="TRL doesn’t do the generating here. `model.generate` does, and it supports both.">Greedy decoding is required by TRL</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">4. Review (Lesson 3): in the <code>labels</code> tensor, what does a value of <code>-100</code> at a position mean?</p>
+  <ol class="quiz-options">
+    <li data-correct data-why="-100 is cross-entropy’s ignore index. SFTTrainer puts it on every prompt token so only the completion is learned.">The loss ignores that position entirely</li>
+    <li data-why="Padding often gets -100, but so do prompt tokens. The value means “ignore”, whatever the token is.">That position holds a padding token</li>
+    <li data-why="Ignored positions add nothing to the loss. Nothing is subtracted.">That position’s loss gets subtracted instead</li>
+    <li data-why="No token has id -100. It’s a marker, not a vocabulary entry.">The target is token id -100</li>
+  </ol>
+</div>
+
+<div class="parsons">
+  <p class="parsons-q">5. <code>model</code>, <code>tok</code>, <code>test_rows</code> and a <code>trainer</code> built on <code>model</code> are ready. Put the lines in order for an honest before/after comparison. Two lines don’t belong.</p>
+  <ol class="parsons-lines">
+    <li>base = score(model, tok, test_rows)</li>
+    <li>trainer.train()</li>
+    <li>tuned = score(trainer.model, tok, test_rows)</li>
+    <li>gain = tuned["field_accuracy"] - base["field_accuracy"]</li>
+    <li>print(f"field accuracy gain: {gain:+.2f}")</li>
+    <li data-distractor>tuned = score(trainer.model, tok, train_rows[:40])</li>
+    <li data-distractor>base = score(model, tok, make_rows(40, "test", seed=2))</li>
+  </ol>
+  <div class="parsons-explain"><p>Score the base model <em>before</em> <code>trainer.train()</code>, because training changes <code>model</code> in place. Scoring the fine-tuned model on <code>train_rows[:40]</code> only shows it learned its own data. The <code>seed=2</code> line draws different test rows from the fine-tuned model’s, so the gain would mix the effect of training with the luck of the draw.</p></div>
+</div>
+
+<div class="recall">
+  <p class="recall-q">6. From memory: in an interview you’re told, “Our fine-tuned extractor scores 100% on its test set, so let’s ship it.” What do you check first, and why? Answer in three or four sentences.</p>
+  <div class="recall-a">
+    <p>First, that the test rows are truly held out and look like real traffic. If they come from the same generator as the training data, 100% only shows the model generalizes within that pattern. Then I’d run stress tests built from realistic messy inputs, such as missing fields, extra numbers, multi-word names and typos. I’d score them greedily on both valid-JSON rate and field accuracy, tag each failure (format, invented, wrong value, out of scope), fix the biggest category with training data, and list the rest as limitations in the model card.</p>
+  </div>
+</div>
+
+<div class="callout source">
+  <p class="callout-title">Primary source for this lesson</p>
+  <p><a href="https://github.com/huggingface/evaluation-guidebook/blob/main/contents/automated-benchmarks/designing-your-automatic-evaluation.md">Hugging Face evaluation guidebook: “Designing your automatic evaluation”</a>. It covers building your own test samples, inspecting them by hand, and picking metrics, including checking worst-case behavior, not just the average. The guidebook’s maintained version now lives in the <a href="https://huggingface.co/spaces/OpenEvals/evaluation-guidebook">OpenEvals Space</a>.</p>
+</div>
+
+<div class="callout ask">
+  <p>Stuck? Look up your error in the <a href="../reference/troubleshooting.html">troubleshooting sheet</a> first. Curious where something comes from? Start with the primary source above, then <a href="../reference/resources.html">further reading</a>. If you’re still stuck, post your code and the full traceback on the <a href="https://discuss.huggingface.co/c/beginners/5">Hugging Face Forums</a>.</p>
+</div>
+
+<nav class="course-nav">
+  <a href="0007-qlora-on-a-free-gpu.html">&larr; Lesson 7</a>
+  <span><a href="../reference/eval-and-ship.html">Cheat sheet: evaluate &amp; ship</a> &middot; <a href="../reference/keras-to-pytorch.html">Keras &harr; PyTorch</a></span>
+  <a href="0009-ship-it.html">Next: Lesson 9 — ship it &rarr;</a>
+</nav>
+
+</main>
+</body>
+</html>
